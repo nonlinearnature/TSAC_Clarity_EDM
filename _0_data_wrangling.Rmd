@@ -1,0 +1,304 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Data folder "EDM_Data_Melack" was downloaded ~11:30 Eastern Daylight Time on Oct 26 2021 from UC Davis Box file shared by Shohei Watanabe. This folder contains initial canadidate variables for EDM analysis organized in a basic file tree. First we simply read in each file, using package "readr" contained in the meta-package "tidyverse".
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+We also make the following parameter definitions to parse out depth zones.
+
+```{r}
+d_sechi <- 30 # Approximate extent of zone of sechi depth dynamics; 30m is approximately the 95th quantile of sechi depth over 1968-present period.
+d_euphotic <- 100 # Approximate deepest extent of 1% euphotic zone over 1968-present period
+```
+
+The variables are descibed as follows in "Chemical_Data_ReadMe.txt"
+
+THP_LTP.csv
+Total hydrolyzable Phosphorus (ug L^-1 as P) at Index. Data before 1995 are questionable and not included.
+
+THP_MLTP.csv
+Total hydrolyzable Phosphorus (ug L^-1 as P) at Mid-lake.  Data before 1995 are questionable and not included.
+
+NO3_LTP.csv
+Nitrate (ug L^-1 as N) at Index from 1968-02-10.      
+
+NO3_MLTP.csv
+Nitrate (ug L^-1 as N) at Mid-lake from 1970-11-17.      
+
+TKN_MLTP.csv
+Total Kjeldahl Nitrogen (ug L^-1 as N) at Mid-lake station from 1989-11-02
+
+TP_MLTP.csv
+Total Phosphorus (ug L^-1 as P) at Mid-lake station from 2000-08-11
+
+```{r}
+## Secchi Disc Depths
+df_Secchi_LTP <- read_csv("./EDM_Data_Melack/Secchi_LTP.csv") # 1967 -
+df_Secchi_MLTP <- read_csv("./EDM_Data_Melack/Secchi_MLTP.csv") # 1980 -
+
+## Chlorophyll a
+# Col 1	Date: Sampled date
+# Col 2 Station_ID: differentiating Index and Mid-lake
+# Col 3	Depth: Depth sampled in m.
+# Col 4	Chla concentration in ug per Liter.
+# Col 5	Flag: code represent the status of data. 1. Good, 2. Estimated, 3. There is potential problem Use with Caution.
+# Col 6 & 7	Comments for data if any.
+df_Chla_LTP <- read_csv("./EDM_Data_Melack/Chl_LTP.csv") # 1983 -
+df_Chla_MLTP <- read_csv("./EDM_Data_Melack/Chl_MLTP.csv") # 1992 - 
+
+## NO3
+
+df_NO3_LTP <- read_csv("./EDM_Data_Melack/NO3_LTP.csv") # 1968 -
+df_NO3_MLTP <- read_csv("./EDM_Data_Melack/NO3_MLTP.csv") # 1980 -
+
+
+## THP
+
+df_THP_LTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
+df_THP_MLTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
+df_TP_MLTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
+
+
+
+```
+
+Processing preamble.
+
+```{r}
+start_date <- "1967-01-01"
+end_date <- "2021-12-31"
+
+v_dates_2mo <- expand_grid(Year=1967:2020,Month=seq(1,12,by=2)) %>%
+  mutate(Day=1) %>%
+  mutate(Date=(make_date(Year,Month,Day))) %>%
+  pull(Date)
+
+v_dates_3mo <- expand_grid(Year=1967:2020,Month=seq(1,12,by=3)) %>%
+  mutate(Day=1) %>%
+  mutate(Date=(make_date(Year,Month,Day))) %>%
+  pull(Date)
+
+f_date_bin <- function(df,v_dates,date_col=Date,binnable_col=everything()){
+  
+  df_binned <- df %>%
+    mutate({{date_col}} := cut.Date({{date_col}},breaks=v_dates)) %>%
+    mutate({{date_col}} := ymd({{date_col}})) %>%
+    right_join(tibble("{{date_col}}" := v_dates)) %>%
+    group_by({{date_col}}) %>%
+    summarise(across(binnable_col,mean))
+
+# df_binned <- df %>%
+#     mutate({{date_col}} := cut.Date({{date_col}},breaks=v_dates)) %>%
+#     mutate({{date_col}} := ymd({{date_col}})) %>%
+#   right_join(tibble("{{date_col}}" := v_dates))
+  
+  return(df_binned) 
+}
+```
+
+Many of the BGC variables aren't just sampled across time, but also across depth. We attempt to usefully summarise this information based on existing limnological understanding of the lake. We will use a depth-weighted averaging scheme to look at BGC in the "sechi zone", the "deep euphotic" zone, and possibly the "deep deep" zone of the lake (below the deep chlorophyll maximum). In averaging, we can also address missing values provided that nearby depths are valid proxies.
+
+In the depth sampling of chlorophyll at LTP, most depths are measured most of the time.
+
+```{r}
+df_Chla_LTP %>%
+  pull(Depth) %>%
+  table()
+```
+
+Additionally there is high correlation between observations at the nearby depths.
+
+```{r}
+df_Chla_LTP_depth_widened <- df_Chla_LTP %>%
+  select(Date,Depth,Chla) %>%
+  group_by(Date) %>%
+  pivot_wider(names_from = "Depth",values_from="Chla") %>%
+  ungroup()
+
+df_Chla_LTP_depth_widened %>%
+  select(-Date) %>%
+  as.matrix() %>%
+  cor(.,use="pair") %>%
+  lattice::levelplot(.,main="Chl Depth COV",col.regions=heat.colors(100,rev=T))
+```
+
+Now, we also define two similar functions for processing depth resolution of the observations. Above, we defined breaks for "sechi zone" and "euphotic zone". In one case, we give weight based on the distance between successive depth measurements. In the other, we do no weighting; this is primarily to check that our weighting scheme doesn't produce odd artifacts.
+
+```{r}
+v_split_depths <- c(0,d_sechi,d_euphotic)
+v_split_labels <-  c("sechi","deep_euphotic")
+
+# v_split_depths <- c(0,d_sechi,d_euphotic)
+v_accumulate_labels <-  c("sechi","euphotic","lake")
+
+f_depth_split_no_weight <- function(df,obs_col,v_depths=v_split_depths,v_labels=v_split_labels,
+                          depth_col=Depth,date_col=Date){
+  
+  df_binned <- df %>%
+    mutate({{depth_col}} := cut({{depth_col}},breaks=v_depths,labels=v_labels)) %>%
+    filter(!is.na({{depth_col}})) %>%
+    mutate({{depth_col}} := droplevels({{depth_col}})) %>%
+    group_by({{date_col}},{{depth_col}}) %>%
+    summarise(across(obs_col,mean)) %>% # this needs to change
+    pivot_wider(id_cols = {{date_col}},
+                names_from={{depth_col}},
+                values_from={{obs_col}},
+                names_glue=glue::glue("{.value}_{<<rlang::as_name(enquo(depth_col))>>}", .open = "<<", .close = ">>"))
+  
+}
+
+f_depth_split <- function(df,obs_col,v_depths=v_split_depths,v_labels=v_split_labels,
+                          depth_col=Depth,date_col=Date){
+  
+  df_binned <- df %>%
+    select({{date_col}},{{depth_col}},{{obs_col}}) %>%
+    # mutate({{depth_col}} := cut({{depth_col}},breaks=v_depths,labels=v_labels)) %>%
+    mutate(depth_bin = cut({{depth_col}},breaks=v_depths,labels=FALSE)) %>%
+    mutate(depth_min = v_split_depths[depth_bin],depth_max = v_split_depths[depth_bin+1]) %>%
+    mutate(depth_bin=factor(depth_bin,labels=v_split_labels)) %>%
+    filter(!is.na(depth_bin)) %>%
+    arrange({{date_col}},{{depth_col}}) %>%
+    group_by({{date_col}},depth_bin) %>%
+    nest(data=c({{depth_col}},{{obs_col}})) %>%
+    mutate(data = map(data,function(df) {
+      ws = diff( c(depth_min,pull(df,{{depth_col}}),depth_max),lag=2)
+      df = df %>% summarise(across(obs_col,~weighted.mean(.x,ws)))
+      return(df)
+    }
+      )) %>%
+    unnest(data) %>%
+    pivot_wider(id_cols = {{date_col}},
+                names_from=depth_bin,
+                values_from={{obs_col}},
+                # names_glue=glue::glue("{.value}_{<<rlang::as_name(enquo(depth_col))>>}", .open = "<<", .close = ">>"))
+                names_glue="{.value}_{depth_bin}")
+  
+}
+```
+
+The more careful depth averaging yields nearly the same information in the sense of signal correlation, however, there is a mean precent error on the order of 2-2.5%.
+
+```{r}
+test_1 <- f_depth_split(df_Chla_LTP,obs_col =  "Chla")
+test_2 <- f_depth_split_no_weight(df_Chla_LTP,obs_col =  "Chla")
+
+cor(test_1$Chla_deep_euphotic,test_2$Chla_deep_euphotic)
+cor(test_1$Chla_sechi,test_2$Chla_sechi)
+
+mean(abs(test_1$Chla_sechi-test_2$Chla_sechi))/mean(test_2$Chla_sechi)
+```
+
+Process chlorophyll; note that there are some issues with inconsistent depth sampling we average through, but nearly every sample appears to extend to 90m.
+
+```{r}
+df_3mo_Chla_LTP <- f_depth_split(df_Chla_LTP,obs_col =  "Chla") %>% f_date_bin(v_dates_3mo)
+df_2mo_Chla_LTP <-f_depth_split(df_Chla_LTP,obs_col =  "Chla") %>% f_date_bin(v_dates_2mo)
+```
+
+Process Sechi
+
+```{r}
+df_Secchi_LTP_reduced <- df_Secchi_LTP %>% mutate(Date=as.Date(Date_Time_Local)) %>% select(-Sample_ID,-Date_Time_Local)
+df_3mo_Secchi_LTP <- f_date_bin(df_Secchi_LTP_reduced,v_dates_3mo)
+df_2mo_Secchi_LTP <- f_date_bin(df_Secchi_LTP_reduced,v_dates_2mo)
+```
+
+Visualize the binning procedure for a 2-year period
+
+```{r}
+date_start_plot <- as.Date("1970-01-01")
+date_end_plot <- as.Date("1972-01-01")
+
+g_vis_bin_3mo <- df_3mo_Secchi_LTP %>%
+  ggplot(aes(x=Date)) + 
+  geom_step(aes(y=Secchi_Ave)) +
+  geom_point(data=df_Secchi_LTP %>% mutate(Date=as.Date(Date_Time_Local)),aes(y=Secchi_Ave),pch=3) +
+  xlim(c(date_start_plot,date_end_plot)) +
+  labs(title="3 month bins")
+
+g_vis_bin_2mo <- df_2mo_Secchi_LTP %>%
+  ggplot(aes(x=Date)) + 
+  geom_step(aes(y=Secchi_Ave)) +
+  geom_point(data=df_Secchi_LTP %>% mutate(Date=as.Date(Date_Time_Local)),aes(y=Secchi_Ave),pch=3) +
+  xlim(c(date_start_plot,date_end_plot)) +
+  labs(title="2 month bins")
+
+gridExtra::grid.arrange(g_vis_bin_3mo,g_vis_bin_2mo,nrow=1)
+```
+
+## Process NO3
+
+
+```{r}
+df_NO3_LTP %>%
+  pull(Depth) %>%
+  table()
+```
+
+The NO3 measurements at LTP have a few stations only measured a handful of times. We elect to discard these. Additionally, only a single regular station is below the rough cut-off for the Euphotic zone we have set.
+
+```{r}
+v_depths_keep_NO3 <- c(0,2,5,10,15,20,30,40,50,60,75,90)
+df_NO3_LTP_reduced <- df_NO3_LTP %>% filter(Depth %in% v_depths_keep_NO3)
+```
+
+As with chlorophyll there is high correlation between NO3 observations at the nearby depths. It is interesting, however, that the large section of high correlation extends deeper than with Chlorophyll.
+
+```{r}
+df_NO3_LTP_depth_widened <- df_NO3_LTP_reduced %>%
+  select(Date,Depth,NO3) %>%
+  arrange(Depth) %>%
+  group_by(Date) %>%
+  pivot_wider(names_from = "Depth",values_from="NO3") %>%
+  ungroup()
+
+df_NO3_LTP_depth_widened %>%
+  select(-Date) %>%
+  as.matrix() %>%
+  cor(.,use="pair") %>%
+  lattice::levelplot(.,main="NO3 Depth Cor",col.regions=heat.colors(100,rev=T))
+```
+
+
+```{r}
+df_3mo_Chla_LTP <- f_depth_split(df_NO3_LTP_reduced,obs_col =  "NO3") %>% f_date_bin(v_dates_3mo)
+df_2mo_Chla_LTP <-f_depth_split(df_NO3_LTP_reduced,obs_col =  "NO3") %>% f_date_bin(v_dates_2mo)
+```
+
+
+## Generate data-frames
+
+
+
+```{r}
+df_3mo_BGC_LTP <- reduce(
+  .x = list(
+    df_Secchi_LTP %>% mutate(Date=as.Date(Date_Time_Local)) %>% select(-Sample_ID,-Date_Time_Local) %>% f_date_bin(v_dates_3mo),
+    df_Chla_LTP %>% f_depth_split(obs_col =  "Chla") %>% f_date_bin(v_dates_3mo),
+    df_NO3_LTP_reduced %>% f_depth_split(obs_col =  "NO3") %>% f_date_bin(v_dates_3mo)
+  ),
+  .f = full_join,by="Date"
+)
+
+save(df_3mo_BGC_LTP,file="./DATA/PROCESSED/_0 3-month BGC.Rdata")
+```
+
+
+```{r}
+df_2mo_BGC_LTP <- reduce(
+  .x = list(
+    df_Secchi_LTP_reduced %>% f_date_bin(v_dates_2mo),
+    df_Chla_LTP %>% f_depth_split(obs_col =  "Chla") %>% f_date_bin(v_dates_2mo),
+    df_NO3_LTP_reduced %>% f_depth_split(obs_col =  "NO3") %>% f_date_bin(v_dates_2mo)
+  ),
+  .f = full_join,by="Date"
+)
+
+save(df_2mo_BGC_LTP,file="./DATA/PROCESSED/_0 2-month BGC.Rdata")
+```

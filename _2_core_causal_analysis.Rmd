@@ -1,0 +1,235 @@
+---
+title: "Phase 2: Causal Analysis of Core Variables"
+author: "ER Deyle"
+date: "2/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+A key need articulated by Lake Tahoe managers is forecasting and understanding impacts of El Nino oscillations on the lake water quality. There are multiple plausible pathways for ENSO to impact water quality. Our goal with causal analysis is to assess not just the net effect but evidence for the importance/balance of individual pathways.
+
+```{r cars}
+library(tidyverse)
+library(rEDM)
+```
+
+## Data Setup
+
+We can begin with the biogeochemical (BGC) variables analyzed in "_1_bgc_univariate.Rmd", but need to append additional columns for key physical drivers.
+
+
+
+
+```{r load BGC}
+load("./DATA/PROCESSED/_0 2-month BGC.Rdata")
+# load("./DATA/PROCESSED/_0 3-month BGC.Rdata")
+
+df_BGC <- df_2mo_BGC_LTP[102:323,]
+# gap fill with linear interpolant
+df_BGC <- mutate_at(df_BGC,-1, ~ zoo::na.approx(., maxgap = 4))
+T_annual <- 6
+
+# df_BGC <- df_3mo_BGC_LTP[68:215,]
+# T_season <- 4
+
+var_BGC <- names(df_BGC)[-1] %>% as.list()
+```
+
+Lake temperature, Streamflow, ENSO
+
+```{r load physical}
+load("./DATA/PROCESSED/_0 2-month USGS.Rdata") # df_2mo_USGS
+var_USGS <- names(df_2mo_USGS)[-1] %>% as.list()
+
+load("./DATA/PROCESSED/_0 2-month indices.Rdata") # df_2mo_indices
+var_indices <- names(df_2mo_indices)[-1] %>% as.list()
+
+load("./DATA/PROCESSED/_0 2-month weather.Rdata")
+var_weather <- names(df_2mo_weather)[-1] %>% as.list()
+
+var_stations <- c(var_USGS,var_weather)
+```
+
+```{r Combine Data Frames}
+
+df_CCM <- df_BGC %>%
+  left_join(df_2mo_indices) %>%
+  left_join(df_2mo_USGS) %>%
+  left_join(df_2mo_weather)
+
+save(df_CCM,file="./DATA/PROCESSED/_2 CCM input.Rdata")
+
+```
+
+
+## Linear Correlations
+
+### Among Stream Flows
+
+The 2-month averaged flow between the three USGS stations (Upper Truckee, Ward Creek, and Blackwood Creek) are highly correlated with each other at 0-lag. This would suggest either aggregating or working with the single most trust-worthy measurement. The Upper Truckee, for example, has a number of missed measurements due to ice (~1460 days).
+
+### Stream Flow and Precip
+
+```{r}
+L_ccf_flow_vs_weather <- map(var_weather,function(var_i){
+  map(var_USGS,function(var_j){
+    df <- df_CCM %>% select(var_i,var_j) %>% filter(complete.cases(.))
+    g <- ccf(df[[1]],df[[2]],main=paste(var_i,"&",var_j))
+    return(g)
+  })
+})
+```
+
+As expected there is a high correlation (~ 0.67) between the 2-month average TROA precipitation record and stream flows with a lag of about 4 months.
+
+### All Station-;level and Indices
+
+```{r}
+L_ccf_stations_vs_indices <- map(var_indices,function(var_i){
+  map(var_stations,function(var_j){
+    df <- df_CCM %>% select(var_i,var_j) %>% filter(complete.cases(.))
+    g <- ccf(df[[1]],df[[2]],main=paste(var_i,"&",var_j))
+    return(g)
+  })
+})
+```
+Correlations between stream-flow measurements and El Nino climate indices appear significant but low. There is a consistent optimal lag of about 9 time steps. We are looking at 2-month averages in the data, so this corresponds to about an 18 month lag. Additionally, the lagged correlations are stronger with the SST-based Nino_3.4 index than the pressure-based SOI.
+
+
+### Biogeochemistry and Physical Variables
+
+Now we look at the linear correlations between these physical variables and the biogeochemistry variables we studied in "Phase 1". Based on the above statistical results, we use a single stream flow and a single oscillation index.
+
+```{r}
+var_phys <- list("Q_mean_Ward","NINO_34","precip")
+
+L_ccf_BGC_vs_phys <- map(var_phys,function(var_i){
+  map(var_BGC,function(var_j){
+    df <- df_CCM %>% select(var_i,var_j) %>% filter(complete.cases(.))
+    g <- ccf(df[[1]],df[[2]],main=paste(var_i,"&",var_j))
+    return(g)
+  })
+})
+```
+
+We see much higher correlations between the stream flow than climate indices to all BGC variables. The strongest correlation is to surface NO3. These correlations exhibit a strong annual cycle to them, and (at least in some cases) may not be easily distinguished from the shared seasonal periodicity of the individual time series.
+
+Other observations:
+- The Secchi depth itself has a strong 2 month lagged (negative). \\
+- The lagged correlations with precipitation seem to be similar across the board to stream flow but uniformly weaker. \\
+
+
+## Lagged Cross-map
+
+### Methodological notes
+
+There is a current debate among CCM practitions over what embedding dimension to use for prediction. In some of the initial CCM demonstrations (e.g. sardine-anchovy-SST) the time series were relatively short (< 100 points). Over-fitting is a real concern in those cases;  significance can be estimated from null (surrogate) analyses, but with short time series too many tunable knobs in the analysis will produce large variances in null results and hence make significance hard to establish. This has led to a convention of using univariate embedding dimensions of the predictor variable to assess CCM to a target variable. However, the optimal embedding dimension for univariate forecasting may well underestimate embedding dimension for other cross-map skill. As a compromise between over-fitting and under-estimation, we use the convention of selecting embedding dimension based off cross-mapping at a different time lag.
+
+###
+
+```{r}
+L_xmap_save_params <- c("columns","target","E","Tp","knn","tau","theta")
+
+f_lag_xmap <- function(df,target_col,pred_col,Tp_list=(-6:6)){
+  
+  #
+  E_list <- 1:15
+  # theta_list <- c(0,10^seq(-2,1,by=.075))
+  
+  lib <- paste(1,NROW(df))
+  pred <- paste(1,NROW(df))
+  
+  
+  out_lag_xmap <- map_df(Tp_list, function(Tp_i){
+    
+    ## Fit E
+    
+    stats_simplex <- map_df(E_list,function(E_i){
+      
+      out_simplex_i <- Simplex(dataFrame=df,
+                               target=target_col,
+                               columns=pred_col,
+                               lib=lib,pred=pred,
+                               E=E_i,
+                               Tp = Tp_i - 1,
+                               parameterList=TRUE)
+      
+      stats_i <- compute_stats(out_simplex_i$predictions$Predictions,
+                               out_simplex_i$predictions$Observations)
+      
+      stats_i <- bind_cols(out_simplex_i$parameters[L_xmap_save_params],
+                           stats_i
+      )
+      
+      return(stats_i)
+      
+    }) # map_df(E_list)
+    
+    stats_simplex <- suppressMessages(type_convert(stats_simplex))
+    E_star <- as.integer(stats_simplex$E[which.max(stats_simplex$rho)])
+    
+    ## Quantify x-map skill
+    
+    out_xmap <- Simplex(dataFrame=df,
+                        target=target_col,
+                        columns=pred_col,
+                        lib=lib,pred=pred,
+                        E=E_star,
+                        Tp = Tp_i,
+                        parameterList=TRUE)
+    
+    stats_xmap_Tp_i <- compute_stats(out_xmap$predictions$Predictions,
+                                out_xmap$predictions$Observations)
+    
+    stats_xmap_Tp_i <- bind_cols(out_xmap$parameters[L_xmap_save_params],
+                           stats_xmap_Tp_i)
+    return(stats_xmap_Tp_i)
+    
+  }) #map_df(Tp_list)
+  
+  return(out_lag_xmap)
+  
+}
+
+```
+
+
+```{r}
+f_lag_xmap(df_CCM,target_col = "precip",pred_col = "Secchi_Ave")
+f_lag_xmap(df_CCM,target_col = "Q_mean_Ward",pred_col = "Secchi_Ave")
+f_lag_xmap(df_CCM,target_col = "NINO_34",pred_col = "Secchi_Ave")
+
+f_lag_xmap(df_CCM,target_col = "Q_mean_Ward",pred_col = "precip")
+f_lag_xmap(df_CCM,target_col = "precip",pred_col = "Q_mean_Ward")
+```
+
+```{r}
+# var_phys <- list("Q_mean_Blackwood","NINO_34","precip")
+
+```
+
+
+```{r}
+df_lag_analys_BGC_vs_phys <- map_df(var_phys,function(var_i){
+  map_df(var_BGC,function(var_j){
+    
+    df <- df_CCM %>% select(var_i,var_j) %>% filter(complete.cases(.))
+    g <- ccf(df[[1]],df[[2]],main=paste(var_i,"&",var_j),plot=FALSE)
+    
+    df_ij <- f_lag_xmap(df_CCM,target_col = var_i,pred_col = var_j) %>%
+      select(1:9) %>%
+      top_n(1,rho) %>%
+      rename(rho_ccm=rho) %>%
+      mutate(rho_corr=max(abs(g$acf)),lag_corr=g$lag[which.max(abs(g$acf))])
+    
+    return(df_ij)
+      
+    
+  })
+})
+
+save(df_lag_analys_BGC_vs_phys,file="./RESULTS/_2 lag analysis table.Rdata")
+```
