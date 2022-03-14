@@ -3,7 +3,10 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-Data folder "EDM_Data_Melack" was downloaded ~11:30 Eastern Daylight Time on Oct 26 2021 from UC Davis Box file shared by Shohei Watanabe. This folder contains initial canadidate variables for EDM analysis organized in a basic file tree. First we simply read in each file, using package "readr" contained in the meta-package "tidyverse".
+
+## Lake Variables
+
+Data folder "EDM_Data_Melack" was downloaded ~11:30 Eastern Daylight Time on Oct 26 2021 from UC Davis Box file shared by Shohei Watanabe. This folder contains initial candidate variables for EDM analysis organized in a basic file tree. First we simply read in each file, using package "readr" contained in the meta-package "tidyverse".
 
 ```{r}
 library(tidyverse)
@@ -182,7 +185,7 @@ f_depth_split <- function(df,obs_col,v_depths=v_split_depths,v_labels=v_split_la
 }
 ```
 
-The more careful depth averaging yields nearly the same information in the sense of signal correlation, however, there is a mean precent error on the order of 2-2.5%.
+The more careful depth averaging yields nearly the same information in the sense of signal correlation, however, there is a mean prescent error on the order of 2-2.5%.
 
 ```{r}
 test_1 <- f_depth_split(df_Chla_LTP,obs_col =  "Chla")
@@ -302,3 +305,123 @@ df_2mo_BGC_LTP <- reduce(
 
 save(df_2mo_BGC_LTP,file="./DATA/PROCESSED/_0 2-month BGC.Rdata")
 ```
+
+
+
+## Exogenous Variables
+
+### USGS
+
+Upper Truckee River at South Lake Tahoe, CA UT1 10336610 	from 1980
+Blackwood Creek near Tahoe City, CA BC1 10336660 		from 1974
+Ward Creek at Hwy 89 near Tahoe Pines, CA WC8 10336676 	from 1972
+
+#            TS   parameter     statistic     Description
+#        215686       63680     00008     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Median)
+#        215687       63680     00002     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Minimum)
+#        215688       63680     00001     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Maximum)
+#        234636       00010     00003     Temperature, water, degrees Celsius (Mean)
+#          7524       00010     00001     Temperature, water, degrees Celsius (Maximum)
+#          7525       00010     00002     Temperature, water, degrees Celsius (Minimum)
+#          7526       00010     00008     Temperature, water, degrees Celsius (Median)
+#          7527       00010     00011     Temperature, water, degrees Celsius (Instantaneous)
+#          7528       00060     00003     Discharge, cubic feet per second (Mean)
+#          7529       00095     00003     Specific conductance, water, unfiltered, microsiemens per centimeter at 25 degrees Celsius (Mean)
+#          7530       80154     00003     Suspended sediment concentration, milligrams per liter (Mean)
+#          7531       80155     00003     Suspended sediment discharge, short tons per day (Mean)
+
+
+```{r,warning=FALSE}
+# v_col_keep <- c("datetime","7528_00060_00003","7528_00060_00003_cd")
+v_col_keep <- c("datetime")
+
+L_files_USGS_daily <- list(
+  Blackwood="./DATA/USGS/USGS_daily_Blackwood_Creek_10336660.txt",
+  Upper_Truckee="./DATA/USGS/USGS_daily_Upper_Truckee_River_10336610.txt",
+  Ward="./DATA/USGS/USGS_daily_Ward_Creek_10336676.txt"
+)
+
+
+data_USGS <- imap(L_files_USGS_daily,function(file_i,name_i){
+  read_delim(file_i,delim="\t",comment="#",na="Ice") %>%
+    select(all_of(v_col_keep),ends_with("00060_00003")) %>%
+    filter(row_number() > 1) %>%
+    set_names(c("Date",paste0("Q_mean_",name_i))) %>%
+    mutate(Date = ymd(Date)) %>%
+    mutate_at(c(2),as.numeric)
+})
+
+df_USGS <- reduce(data_USGS,full_join,by="Date") %>%
+  filter(Date >= ymd("1972-10-01"))
+
+
+df_3mo_USGS <- df_USGS %>% f_date_bin(v_dates_3mo)
+df_2mo_USGS <- df_USGS %>% f_date_bin(v_dates_2mo)
+
+save(df_3mo_USGS,file="./DATA/PROCESSED/_0 3-month USGS.Rdata")
+save(df_2mo_USGS,file="./DATA/PROCESSED/_0 2-month USGS.Rdata")
+```
+
+
+## Precipitation.
+
+Rain versus Snow Water Equivalent (should have different relationships to lake and to ENSO).
+
+```{r}
+L_files_weather_daily <- list(
+  TROA_precip = "./DATA/TROA_NET/troa_Lake_Tahoe_WM_precip.txt"
+)
+
+data_weather <- map(L_files_weather_daily,function(file_i){
+  read_delim(file_i,
+             delim="\t") %>%
+             # col_names = c("Date","precip_in"),
+             # skip=1) %>%
+    # pivot_longer(-1,names_to="Month",values_to=name_i) %>%
+    rename_at(1,~"Date") %>%
+    rename_at(2,~"precip") %>%
+    select(1:2) %>%
+    mutate(Date = mdy(Date)) %>%
+    mutate_at(2,~replace(., is.na(.), 0))
+})
+
+df_weather <- reduce(data_weather,full_join,by="Date") %>%
+  filter(Date >= ymd("1967-01-01"))
+
+df_3mo_weather <- df_weather %>% f_date_bin(v_dates_3mo)
+df_2mo_weather <- df_weather %>% f_date_bin(v_dates_2mo)
+
+save(df_3mo_weather,file="./DATA/PROCESSED/_0 3-month weather.Rdata")
+save(df_2mo_weather,file="./DATA/PROCESSED/_0 2-month weather.Rdata")
+```
+
+### Climate Indices
+
+```{r}
+L_files_indices_monthly <- list(
+  SOI="./DATA/NOAA_INDICES/soi.data",
+  NINO_34="./DATA/NOAA_INDICES/nina34.anom.data"
+)
+
+
+data_indices <- imap(L_files_indices_monthly,function(file_i,name_i){
+  read_table(file_i,
+             col_names = c("Year",as.character(1:12)),
+             skip=1,na="-99.99",comment="#") %>%
+    pivot_longer(-1,names_to="Month",values_to=name_i) %>%
+    mutate(Date = ymd(paste(Year,Month,"15",sep="-"))) %>%
+    select(Date,name_i)
+})
+
+df_indices <- reduce(data_indices,full_join,by="Date") %>%
+  filter(Date >= ymd("1967-01-01"))
+
+
+df_3mo_indices <- df_indices %>% f_date_bin(v_dates_3mo)
+df_2mo_indices <- df_indices %>% f_date_bin(v_dates_2mo)
+
+save(df_3mo_indices,file="./DATA/PROCESSED/_0 3-month indices.Rdata")
+save(df_2mo_indices,file="./DATA/PROCESSED/_0 2-month indices.Rdata")
+```
+
+
