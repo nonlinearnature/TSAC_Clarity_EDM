@@ -41,6 +41,9 @@ var_BGC <- names(df_BGC)[-1] %>% as.list()
 Lake temperature, Streamflow, ENSO
 
 ```{r load physical}
+load("./DATA/PROCESSED/_0 2-month T_LTP.Rdata")
+var_T_LTP <- names(df_2mo_T_LTP)[-1] 
+
 load("./DATA/PROCESSED/_0 2-month USGS.Rdata") # df_2mo_USGS
 var_USGS <- names(df_2mo_USGS)[-1] %>% as.list()
 
@@ -50,12 +53,13 @@ var_indices <- names(df_2mo_indices)[-1] %>% as.list()
 load("./DATA/PROCESSED/_0 2-month weather.Rdata")
 var_weather <- names(df_2mo_weather)[-1] %>% as.list()
 
-var_stations <- c(var_USGS,var_weather)
+var_stations <- c(var_T_LTP,var_USGS,var_weather)
 ```
 
 ```{r Combine Data Frames}
 
 df_CCM <- df_BGC %>%
+  left_join(df_2mo_T_LTP) %>%
   left_join(df_2mo_indices) %>%
   left_join(df_2mo_USGS) %>%
   left_join(df_2mo_weather)
@@ -105,6 +109,7 @@ Now we look at the linear correlations between these physical variables and the 
 
 ```{r}
 var_phys <- list("Q_mean_Ward","NINO_34","precip")
+var_phys <- c(var_phys,var_T_LTP)
 
 L_ccf_BGC_vs_phys <- map(var_phys,function(var_i){
   map(var_BGC,function(var_j){
