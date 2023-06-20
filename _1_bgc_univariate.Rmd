@@ -283,31 +283,9 @@ do_all_surrogates("NO3_deep_euphotic",file_NO3_deep_euphotic)
 ```
 
 
-```{r}
-# sum(out_AR$delta_rho_smap < max(out_univar$smap$rho) - out_univar$smap$rho[1])
-# sum(out_AR$rho_simplex < max(out_univar$simplex$rho))
-# 
-# sum(out_seasonal$delta_rho_smap < max(out_univar$smap$rho) - out_univar$smap$rho[1])
-# sum(out_seasonal$rho_simplex < max(out_univar$simplex$rho))
-# 
-# sum(out_shuffle$delta_rho_smap < max(out_univar$smap$rho) - out_univar$smap$rho[1])
-# sum(out_shuffle$rho_simplex < max(out_univar$simplex$rho))
-```
-
 ## Visualization
 
 We wish to look at EDM benchmarks across the BGC variables, comparing each to the null distributions. This requires re-organizing the outputs somewhat.
-
-```{r}
-collect_null_results <- function(outputs,labels){
-  
-  outputs_collected <- map2_dfr(outputs,labels,function(x,y) x %>% mutate(method=y))
-  outputs_collected <- outputs_collected %>%
-    mutate(method=as_factor(method))
-  return(outputs_collected)
-  
-}
-```
 
 ```{r}
 source("./FUNCTIONS/_1_funs_plotting.R")
@@ -321,7 +299,6 @@ file_list <- list(file_Sechi_surr,
                   file_Chla_deep_euphotic,
                   file_NO3_sechi_surr,
                   file_NO3_deep_euphotic)
-
 
 out_all_null_all_var <- map_dfr(file_list,function(fpath){
   
@@ -347,23 +324,32 @@ out_all_null_all_var <- map_dfr(file_list,function(fpath){
 ```
 
 ```{r}
-g_simplex_all_nulls <- out_all_null_all_var %>% ggplot(aes(x=target,y=rho_simplex)) + 
+
+
+
+g_simplex_all_nulls <- out_all_null_all_var %>% 
+  # mutate(target = factor(target,levels=names(dict_Fig4_labelling),labels=dict_Fig4_labelling)) %>%
+  ggplot(aes(x=target,y=rho_simplex)) + 
   geom_violin(alpha=0.5,aes(fill=method)) +
   geom_point(data=out_all_var_univar,size=3,aes(color="true")) +
   geom_spoke(data=out_all_var_univar,aes(angle = 0, radius = 0.25,color="true")) +
 geom_spoke(data=out_all_var_univar,aes(angle = pi, radius = 0.25,color="true")) +
   coord_flip() +
   scale_color_manual(values="black",breaks="true") +
+  scale_x_discrete(limits=names(dict_Fig4_labelling),labels=dict_Fig4_labelling) +
   theme_bw() +
   labs(title="Null distributions of Simplex forecast skill",color="")
 
-g_smap_all_nulls <- out_all_null_all_var %>% ggplot(aes(x=target,y=rho_smap)) + 
+g_smap_all_nulls <- out_all_null_all_var %>% 
+  # mutate(target = factor(target,levels=names(dict_Fig4_labelling),labels=dict_Fig4_labelling)) %>%
+  ggplot(aes(x=target,y=rho_smap)) + 
   geom_violin(alpha=0.5,aes(fill=method)) +
   geom_point(data=out_all_var_univar,size=3,aes(color="true")) +
   geom_spoke(data=out_all_var_univar,aes(angle = 0, radius = 0.25,color="true")) +
 geom_spoke(data=out_all_var_univar,aes(angle = pi, radius = 0.25,color="true")) +
   coord_flip() +
   scale_color_manual(values="black",breaks="true") +
+  scale_x_discrete(limits=names(dict_Fig4_labelling),labels=dict_Fig4_labelling) +
   theme_bw() +
   labs(title="Null distributions of S-map forecast skill",color="")
 

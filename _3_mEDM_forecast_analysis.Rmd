@@ -1,0 +1,451 @@
+---
+title: "mEDM forecast analysis"
+author: "ER Deyle"
+date: "4/21/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Core causal analysis suggests that the "Secchi zone" water temperature and river flux both have strong nonlinear driving effects on water quality. We conduct a simple multivariate EDM forecast experiment to see if these are distinguishable effects. We want to see if adding either or both improves univariate forecast skill the most.
+
+## Data Setup
+
+
+```{r cars}
+library(tidyverse)
+library(rEDM)
+library(lubridate)
+library(gridExtra)
+```
+
+```{r}
+load("./DATA/PROCESSED/_2 CCM input.Rdata")
+
+L_save_params <- c("columns","target","E","Tp","knn","tau","theta")
+```
+
+
+## Analysis Definitions
+
+```{r}
+do_mEDM_once <- function(df,target_col,columns,Tp=1,normalize=T,stats_only=T){
+  
+  if(normalize){
+    df <- df %>%
+      mutate_at(vars(any_of(c(target_col,columns))),funs( . / sd(.,na.rm=T)))
+  }
+  
+  theta_list <- c(0,10^seq(-2,1,by=.075))
+  
+  lib <- paste(1,NROW(df))
+  pred <- paste(1,NROW(df))
+  
+  ## S-map
+  stats_smap <- map_df(theta_list,function(theta_i){
+    
+    out_smap_i <- SMap(dataFrame=df,
+                       target=target_col,
+                       columns=columns,
+                       lib=lib,pred=pred,
+                       E=length(columns),
+                       theta=theta_i,
+                       Tp=Tp,
+                       embedded = TRUE,
+                       parameterList = TRUE)
+    
+    stats_i <- compute_stats(out_smap_i$predictions$Predictions,out_smap_i$predictions$Observations)
+    
+    stats_i <- bind_cols(
+      out_smap_i$parameters[L_save_params],
+              stats_i
+              )
+    
+    return(stats_i)
+    
+  })
+  
+  stats_smap <- suppressMessages(type_convert(stats_smap))
+  
+  if(stats_only){
+    
+    return(stats_smap)
+    
+  }
+  
+  theta_star <- stats_smap$theta[which.max(stats_smap$rho)]
+    
+  out_smap_i <- SMap(dataFrame=df,
+                     target=target_col,
+                     columns=columns,
+                     lib=lib,pred=pred,
+                     E=length(columns),
+                     theta=theta_star,
+                     Tp=Tp,
+                     embedded = TRUE,
+                     parameterList = TRUE)
+    
+  
+  return(list(stats=stats_smap,preds=multi_preds))
+  
+}
+
+do_mixed_mEDM <- function(df,target_col,columns,max_lags=10,Tp=1,normalize=T,stats_only=T){
+  
+  if(normalize){
+    df <- df %>%
+      mutate_at(vars(any_of(c(target_col,columns))),funs( . / sd(.,na.rm=T)))
+  }
+
+  df_mixed <- bind_cols(df %>% select(1,target_col),
+                        make_block(df,columns=target_col,max_lag=max_lags))
+  
+  v_lag_names <- names(df_mixed)[-(1:2)]
+  
+  df_mixed <- bind_cols(df_mixed,df %>% select(all_of(columns)))
+  
+  df_mixed <- df_mixed[-(1:max_lags),]
+  
+  theta_list <- c(0, 1e-04, 3e-04, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8)
+  theta_list <- c(0, 1e-04, 3e-04, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5)
+  
+  lib <- paste(1,NROW(df_mixed))
+  pred <- paste(1,NROW(df_mixed))
+  
+  ## Simplex
+  stats_simplex <- map_df(1:max_lags,function(E_i){
+    out_simplex_i <- Simplex(dataFrame=df_mixed,
+                             target=target_col,
+                             columns=c(columns,v_lag_names[1:E_i]),
+                             lib=lib,pred=pred,
+                             Tp=Tp,
+                             embedded = TRUE,
+                             parameterList=TRUE)
+    
+    stats_i <- compute_stats(out_simplex_i$predictions$Predictions,
+                             out_simplex_i$predictions$Observations)
+    
+    stats_i <- bind_cols(out_simplex_i$parameters[L_save_params],
+                         stats_i
+    )
+    
+    return(stats_i)
+    
+  })
+  
+  stats_simplex <- suppressMessages(type_convert(stats_simplex))
+  
+  E_star <- as.integer(stats_simplex$E[which.max(stats_simplex$rho)])
+  columns_star <- c(columns,v_lag_names[1:(E_star-length(columns))])
+    
+  ## S-map
+  stats_smap <- map_df(theta_list,function(theta_i){
+    
+    out_smap_i <- SMap(dataFrame=df_mixed,
+                       target=target_col,
+                       columns=columns_star,
+                       lib=lib,pred=pred,
+                       Tp=Tp,
+                       E=E_star,
+                       theta=theta_i,
+                       embedded = TRUE,
+                       parameterList = TRUE)
+    
+    stats_i <- compute_stats(out_smap_i$predictions$Predictions,out_smap_i$predictions$Observations)
+    
+    stats_i <- bind_cols(
+      out_smap_i$parameters[L_save_params],
+      stats_i
+    )
+    
+    return(stats_i)
+    
+  })
+  
+  stats_smap <- suppressMessages(type_convert(stats_smap))
+  
+  return(list(simplex=stats_simplex,smap=stats_smap))
+  
+} #do_mEDM_models
+```
+
+```{r,include=FALSE}
+df_test <- data.frame(time = seq(0,20,by=0.1)) %>%
+  mutate(x = sin(time), y=20*cos(time + .25)) %>%
+  mutate(z=cos(time*7/11)*(x^2) + .3*sin(time*17/15))
+
+# test_norm <- do_mEDM_once(df_test,"z",columns=c("y","z"),Tp=5)
+# test_raw <- do_mEDM_once(df_test,"z",columns=c("y","z"),Tp=5,normalize = F)
+
+data(Lorenz5D)
+test_norm <- do_mixed_mEDM(Lorenz5D,target_col="V3",columns="V1",max_lags=7,Tp=5)
+```
+
+
+```{r}
+test_out <- do_mixed_mEDM(df_CCM,target_col="Secchi_Ave",columns="Temp_avg_sechi",max_lags=12)
+
+# results_mEDM <- do_mixed_mEDM(df_CCM,target_col="Secchi_Ave",columns=NULL,max_lags=12)
+# results_mEDM <- do_mixed_mEDM(df_CCM,target_col="Secchi_Ave",columns="Temp_avg_sechi",max_lags=12)
+# results_mEDM <- do_mixed_mEDM(df_CCM,target_col="Secchi_Ave",columns="Q_mean_Ward",max_lags=12)
+# results_mEDM <- do_mixed_mEDM(df_CCM,target_col="Secchi_Ave",columns=c("Temp_avg_sechi","Q_mean_Ward"),max_lags=12)
+
+```
+
+
+
+## Run Analysis
+
+
+```{r}
+df_mEDM <- df_CCM %>%
+  mutate(year_sin=sin(2*pi*yday(Date)/365),
+         year_cos=sin(2*pi*yday(Date)/365))
+
+L_models_compare <- list(
+  univar = NULL,
+  Q = "Q_mean_Ward",
+  T = "Temp_avg_sechi",
+  `(Q,T)` = c("Temp_avg_sechi","Q_mean_Ward"),
+  # season = c("year_sin","year_cos")
+  season = c("year_sin"),
+  `(Q,season)` = c("Q_mean_Ward","year_sin")
+)
+
+results_mEDM_simplex <- imap_dfr(L_models_compare,function(model_i,name_i){
+  
+  out <- do_mixed_mEDM(df_mEDM,target_col="Secchi_Ave",columns=model_i,max_lags=12)
+  # out <- out$simplex %>% mutate(columns=columns[1])
+  out <- out$simplex %>% mutate(columns=name_i)
+  
+})
+
+results_mEDM_smap <- imap_dfr(L_models_compare,function(model_i,name_i){
+  
+  out <- do_mixed_mEDM(df_mEDM,target_col="Secchi_Ave",columns=model_i,max_lags=12)
+  out <- out$smap %>% mutate(columns=name_i)
+  
+})
+
+g_mEDM_secchi_simplex <- results_mEDM_simplex %>%
+  ggplot(aes(x=E,y=rho,color=columns)) + geom_line()
+
+
+g_mEDM_secchi_smap <- results_mEDM_smap %>%
+  ggplot(aes(x=theta,y=rho,color=columns)) + geom_line()
+
+grid.arrange(g_mEDM_secchi_simplex,g_mEDM_secchi_smap,nrow=1)
+```
+
+The result here is interesting— incorporating drivers improves over univariate forecasting for Secchi depth, but none of the physical drivers improve the forecasting more than simply the annual sinusoidal tracking insolation in northern latitudes. It's possible that including drivers at the correct lags will improve, although the way the initial code has been written, there is a built-in 2 month lag. It is important to note, though, (looking at the left plot) that whatever driver or drivers are including as predictor variables, it is still necessary to "fill out" the dimensionality of the system with lags of Secchi_depth. That is to say, there are still hidden dimensions of variability.
+
+
+
+
+```{r}
+df_mEDM <- df_CCM %>%
+  mutate(year_sin=sin(2*pi*yday(Date)/365),
+         year_cos=sin(2*pi*yday(Date)/365))
+
+L_models_compare <- list(
+  univar = NULL,
+  Q = "Q_mean_Ward",
+  T = "Temp_avg_sechi",
+  `(Q,T)` = c("Temp_avg_sechi","Q_mean_Ward"),
+  # season = c("year_sin","year_cos")
+  season = c("year_sin"),
+  `(Q,season)` = c("Q_mean_Ward","year_sin")
+)
+
+results_mEDM_simplex <- imap_dfr(L_models_compare,function(model_i,name_i){
+  
+  out <- do_mixed_mEDM(df_mEDM,target_col="Chla_sechi",columns=model_i,max_lags=12)
+  # out <- out$simplex %>% mutate(columns=columns[1])
+  out <- out$simplex %>% mutate(columns=name_i)
+  
+})
+
+results_mEDM_smap <- imap_dfr(L_models_compare,function(model_i,name_i){
+  
+  out <- do_mixed_mEDM(df_mEDM,target_col="Chla_sechi",columns=model_i,max_lags=12)
+  out <- out$smap %>% mutate(columns=name_i)
+  
+})
+
+g_mEDM_secchi_simplex <- results_mEDM_simplex %>%
+  ggplot(aes(x=E,y=rho,color=columns)) + geom_line()
+
+
+g_mEDM_secchi_smap <- results_mEDM_smap %>%
+  ggplot(aes(x=theta,y=rho,color=columns)) + geom_line()
+
+grid.arrange(g_mEDM_secchi_simplex,g_mEDM_secchi_smap,nrow=1)
+```
+Run multi-view forecast analysis to benchmark ceiling on forecast skill.
+
+```{r}
+#df_mEDM
+# k_fold <- 4
+
+# do_multiview_1_time <- function(df=df_CCM,lib,pred,E=5,D=3){
+#   Multiview(dataFrame=df,lib=lib,pred=pred,trainLib=TRUE,
+#             E=E,D=D,
+#             columns=cols,
+#             target="Secchi_Ave")
+#   # Multiview( dataFrame = block_3sp, lib = "1 190", pred = "1 190",
+#   #              E = 3, columns = "x_t y_t z_t", target = "x_t" ,D=1,trainLib=FALSE)
+# }
+
+make_k_fold_chunks <- function(num_row,k_fold){
+  L_chunks <- map(1:k_fold,function(l) c(floor(1 + (l-1)*(num_row/k_fold)),floor( (l)*(num_row/k_fold) )))
+  return(L_chunks)
+}
+
+# block_chl_mEDM %>% 
+#         select(-T_surf,-Ptot_lake,-Ptot_epi,-T_air,-year_cosine) %>%
+#         multiview(lib=c(1,nrow(block_chl_mEDM)),pred=c(1,nrow(block_chl_mEDM)),
+#                   target_column="chl",
+#                   max_lag=3,E=4,
+#                   first_column_time = T)
+
+cols_all <- names(df_CCM)[-1]
+cols_just_drivers <- names(df_CCM)[c(2,7:15)]
+
+L_k_fold_chunks <- make_k_fold_chunks(nrow(df_CCM),4)
+
+L_out <- map(1:length(L_k_fold_chunks),function(i_fold){
+  lib_i <- map_dfr(L_k_fold_chunks[-i_fold],~data.frame(start=.[1],end=.[2]))
+  pred_i <- map_dfr(L_k_fold_chunks[1],~data.frame(start=.[1],end=.[2]))
+  
+  out_fold_i <- with(list(E=5,D=3,cols=cols_just_drivers),
+                     Multiview(dataFrame=df_CCM,lib=lib_i,pred=pred_i,trainLib=TRUE,
+                          E=E,D=D,tau=-2,
+                          columns=cols,
+                          multiview=sqrt(choose(length(cols)*D,E)),
+                          target="Secchi_Ave")
+  )
+  
+})
+
+
+save(L_out,file="./RESULTS/_3_Sechi_raw_multiview.Rdata")
+
+```
+
+
+
+
+```{r}
+df_mEDM <- df_CCM %>%
+  mutate(year_sin=sin(2*pi*yday(Date)/365),
+         year_cos=sin(2*pi*yday(Date)/365)) %>%
+  mutate(Secchi_delta = c(NA,diff(Secchi_Ave)))
+
+L_models_compare <- list(
+  univar = NULL,
+  Q = "Q_mean_Ward",
+  T = "Temp_avg_sechi",
+  `(Q,T)` = c("Temp_avg_sechi","Q_mean_Ward"),
+  # season = c("year_sin","year_cos")
+  season = c("year_sin"),
+  `(Q,season)` = c("Q_mean_Ward","year_sin")
+)
+
+results_mEDM_simplex <- imap_dfr(L_models_compare,function(model_i,name_i){
+  
+  out <- do_mixed_mEDM(df_mEDM,target_col="Secchi_delta",columns=model_i,max_lags=12)
+  # out <- out$simplex %>% mutate(columns=columns[1])
+  out <- out$simplex %>% mutate(columns=name_i)
+  
+})
+
+results_mEDM_smap <- imap_dfr(L_models_compare,function(model_i,name_i){
+  
+  out <- do_mixed_mEDM(df_mEDM,target_col="Secchi_delta",columns=model_i,max_lags=12)
+  out <- out$smap %>% mutate(columns=name_i)
+  
+})
+
+g_mEDM_secchi_simplex <- results_mEDM_simplex %>%
+  ggplot(aes(x=E,y=rho,color=columns)) + geom_line()
+
+
+g_mEDM_secchi_smap <- results_mEDM_smap %>%
+  ggplot(aes(x=theta,y=rho,color=columns)) + geom_line()
+
+grid.arrange(g_mEDM_secchi_simplex,g_mEDM_secchi_smap,nrow=1)
+
+save(results_mEDM_simplex,results_mEDM_smap,file="./RESULTS/_3_Sechi_deltas_mEDM.Rdata")
+
+
+```
+
+
+
+```{r}
+df_multiview <- df_CCM %>%
+  mutate(year_sin=sin(2*pi*yday(Date)/365)) %>%
+  mutate(Secchi_Ave = c(NA,diff(Secchi_Ave))) %>%
+  rename(Secchi_delta = Secchi_Ave) %>%
+  mutate(across(!Date,~( . / sd(.,na.rm=T))))
+
+cols_all <- names(df_multiview)[-1]
+cols_just_drivers <- names(df_multiview)[c(2,7:16)]
+
+L_k_fold_chunks <- make_k_fold_chunks(nrow(df_multiview),4)
+
+if(FALSE){
+L_out <- map(1:length(L_k_fold_chunks),function(i_fold){
+  lib_i <- map_dfr(L_k_fold_chunks[-i_fold],~data.frame(start=.[1],end=.[2]))
+  pred_i <- map_dfr(L_k_fold_chunks[i_fold],~data.frame(start=.[1],end=.[2]))
+  
+  out_fold_i <- with(list(E=5,D=3,cols=cols_just_drivers),
+                     Multiview(dataFrame=df_multiview,lib=lib_i,pred=pred_i,trainLib=TRUE,
+                          E=E,D=D,tau=-2,
+                          columns=cols,
+                          multiview=sqrt(choose(length(cols)*D,E)),
+                          target="Secchi_delta")
+  )
+  
+}) }else{
+    
+  # Multiview forecast skill using only driving variables as additional candidate embedding variables
+  results_multiview <- with(list(E=5,D=3,cols=cols_just_drivers),
+                     Multiview(dataFrame=df_multiview,lib=c(1,222),pred=c(1,222),trainLib=FALSE,
+                          E=E,D=D,tau=-2,
+                          columns=cols,
+                          multiview=sqrt(choose(length(cols)*D,E)),
+                          target="Secchi_delta")
+  )
+  
+  # Multiview forecast skill including other BGC variables as candidate embedding variables
+  results_multiview_2 <- with(list(E=5,D=2,cols=cols_all),
+                     Multiview(dataFrame=df_multiview,lib=c(1,222),pred=c(1,222),trainLib=FALSE,
+                          E=E,D=D,tau=-2,
+                          columns=cols,
+                          multiview=sqrt(choose(length(cols)*D,E)),
+                          target="Secchi_delta")
+  )
+}
+
+
+save(L_out,results_multiview,results_multiview_2,file="./RESULTS/_3_Sechi_deltas_multiview.Rdata")
+
+map_dfr(L_out,~.$Predictions) %>% filter(complete.cases(.)) %>% {compute_stats(.$Observations,.$Predictions)}
+
+
+```
+
+
+## Interpretation
+
+
+
+Understanding the causal drivers and fleshing out the dimensions of variability, can in fact lead to improved forecasting with these (relatively) simple Machine Learning techniques.
+
+
+
+

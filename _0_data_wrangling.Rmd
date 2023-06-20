@@ -3,19 +3,18 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-
-## Lake Variables
-
-Data folder "EDM_Data_Melack" was downloaded ~11:30 Eastern Daylight Time on Oct 26 2021 from UC Davis Box file shared by Shohei Watanabe. This folder contains initial candidate variables for EDM analysis organized in a basic file tree. First we simply read in each file, using package "readr" contained in the meta-package "tidyverse".
-
 ```{r}
 library(tidyverse)
 library(lubridate)
 ```
 
+## Biogeochemistry Variables
+
+Data folder "EDM_Data_Melack" was downloaded ~11:30 Eastern Daylight Time on Oct 26 2021 from UC Davis Box file shared by Shohei Watanabe. This folder contains initial candidate variables for EDM analysis organized in a basic file tree. First we simply read in each file, using package "readr" contained in the meta-package "tidyverse".
+
 We also make the following parameter definitions to parse out depth zones.
 
-```{r}
+```{r Define Processing Parameters}
 d_sechi <- 30 # Approximate extent of zone of sechi depth dynamics; 30m is approximately the 95th quantile of sechi depth over 1968-present period.
 d_euphotic <- 100 # Approximate deepest extent of 1% euphotic zone over 1968-present period
 ```
@@ -40,7 +39,7 @@ Total Kjeldahl Nitrogen (ug L^-1 as N) at Mid-lake station from 1989-11-02
 TP_MLTP.csv
 Total Phosphorus (ug L^-1 as P) at Mid-lake station from 2000-08-11
 
-```{r}
+```{r Read Files}
 ## Secchi Disc Depths
 df_Secchi_LTP <- read_csv("./EDM_Data_Melack/Secchi_LTP.csv") # 1967 -
 df_Secchi_MLTP <- read_csv("./EDM_Data_Melack/Secchi_MLTP.csv") # 1980 -
@@ -55,14 +54,16 @@ df_Secchi_MLTP <- read_csv("./EDM_Data_Melack/Secchi_MLTP.csv") # 1980 -
 df_Chla_LTP <- read_csv("./EDM_Data_Melack/Chl_LTP.csv") # 1983 -
 df_Chla_MLTP <- read_csv("./EDM_Data_Melack/Chl_MLTP.csv") # 1992 - 
 
-## NO3
 
+## Phytoplankton
+df_Phyto_LTP <- read_csv("./DATA/Phytoplankton/Phytoplankton_LTP_Depth_Sample.csv")
+
+## NO3
 df_NO3_LTP <- read_csv("./EDM_Data_Melack/NO3_LTP.csv") # 1968 -
 df_NO3_MLTP <- read_csv("./EDM_Data_Melack/NO3_MLTP.csv") # 1980 -
 
 
 ## THP
-
 df_THP_LTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
 df_THP_MLTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
 df_TP_MLTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
@@ -73,7 +74,7 @@ df_TP_MLTP <- read_csv("./EDM_Data_Melack/THP_LTP.csv") # 1996 -
 
 Processing preamble.
 
-```{r}
+```{r Define f_date_bin}
 start_date <- "1967-01-01"
 end_date <- "2021-12-31"
 
@@ -133,7 +134,7 @@ df_Chla_LTP_depth_widened %>%
 
 Now, we also define two similar functions for processing depth resolution of the observations. Above, we defined breaks for "sechi zone" and "euphotic zone". In one case, we give weight based on the distance between successive depth measurements. In the other, we do no weighting; this is primarily to check that our weighting scheme doesn't produce odd artifacts.
 
-```{r}
+```{r Define f_depth_split}
 v_split_depths <- c(0,d_sechi,d_euphotic)
 v_split_labels <-  c("sechi","deep_euphotic")
 
@@ -164,7 +165,7 @@ f_depth_split <- function(df,obs_col,v_depths=v_split_depths,v_labels=v_split_la
     # mutate({{depth_col}} := cut({{depth_col}},breaks=v_depths,labels=v_labels)) %>%
     mutate(depth_bin = cut({{depth_col}},breaks=v_depths,labels=FALSE)) %>%
     mutate(depth_min = v_split_depths[depth_bin],depth_max = v_split_depths[depth_bin+1]) %>%
-    mutate(depth_bin=factor(depth_bin,labels=v_split_labels)) %>%
+    mutate(depth_bin=factor(depth_bin,labels=v_labels)) %>%
     filter(!is.na(depth_bin)) %>%
     arrange({{date_col}},{{depth_col}}) %>%
     group_by({{date_col}},depth_bin) %>%
@@ -187,7 +188,7 @@ f_depth_split <- function(df,obs_col,v_depths=v_split_depths,v_labels=v_split_la
 
 The more careful depth averaging yields nearly the same information in the sense of signal correlation, however, there is a mean prescent error on the order of 2-2.5%.
 
-```{r}
+```{r Test f_depth_split}
 test_1 <- f_depth_split(df_Chla_LTP,obs_col =  "Chla")
 test_2 <- f_depth_split_no_weight(df_Chla_LTP,obs_col =  "Chla")
 
@@ -199,22 +200,23 @@ mean(abs(test_1$Chla_sechi-test_2$Chla_sechi))/mean(test_2$Chla_sechi)
 
 Process chlorophyll; note that there are some issues with inconsistent depth sampling we average through, but nearly every sample appears to extend to 90m.
 
-```{r}
+```{r Process Chla}
 df_3mo_Chla_LTP <- f_depth_split(df_Chla_LTP,obs_col =  "Chla") %>% f_date_bin(v_dates_3mo)
 df_2mo_Chla_LTP <-f_depth_split(df_Chla_LTP,obs_col =  "Chla") %>% f_date_bin(v_dates_2mo)
 ```
 
-Process Sechi
+Process Secchi
 
-```{r}
+```{r Process Secchi}
 df_Secchi_LTP_reduced <- df_Secchi_LTP %>% mutate(Date=as.Date(Date_Time_Local)) %>% select(-Sample_ID,-Date_Time_Local)
 df_3mo_Secchi_LTP <- f_date_bin(df_Secchi_LTP_reduced,v_dates_3mo)
 df_2mo_Secchi_LTP <- f_date_bin(df_Secchi_LTP_reduced,v_dates_2mo)
 ```
 
+
 Visualize the binning procedure for a 2-year period
 
-```{r}
+```{r Visual binned}
 date_start_plot <- as.Date("1970-01-01")
 date_end_plot <- as.Date("1972-01-01")
 
@@ -235,10 +237,7 @@ g_vis_bin_2mo <- df_2mo_Secchi_LTP %>%
 gridExtra::grid.arrange(g_vis_bin_3mo,g_vis_bin_2mo,nrow=1)
 ```
 
-## Process NO3
-
-
-```{r}
+```{r Check NO3}
 df_NO3_LTP %>%
   pull(Depth) %>%
   table()
@@ -246,14 +245,14 @@ df_NO3_LTP %>%
 
 The NO3 measurements at LTP have a few stations only measured a handful of times. We elect to discard these. Additionally, only a single regular station is below the rough cut-off for the Euphotic zone we have set.
 
-```{r}
+```{r Depth filter 1}
 v_depths_keep_NO3 <- c(0,2,5,10,15,20,30,40,50,60,75,90)
 df_NO3_LTP_reduced <- df_NO3_LTP %>% filter(Depth %in% v_depths_keep_NO3)
 ```
 
 As with chlorophyll there is high correlation between NO3 observations at the nearby depths. It is interesting, however, that the large section of high correlation extends deeper than with Chlorophyll.
 
-```{r}
+```{r Depth filter 2}
 df_NO3_LTP_depth_widened <- df_NO3_LTP_reduced %>%
   select(Date,Depth,NO3) %>%
   arrange(Depth) %>%
@@ -269,15 +268,28 @@ df_NO3_LTP_depth_widened %>%
 ```
 
 
-```{r}
-df_3mo_Chla_LTP <- f_depth_split(df_NO3_LTP_reduced,obs_col =  "NO3") %>% f_date_bin(v_dates_3mo)
-df_2mo_Chla_LTP <-f_depth_split(df_NO3_LTP_reduced,obs_col =  "NO3") %>% f_date_bin(v_dates_2mo)
+```{r Process NO3}
+df_3mo_NO3_LTP <- f_depth_split(df_NO3_LTP_reduced,obs_col =  "NO3") %>% f_date_bin(v_dates_3mo)
+df_2mo_NO3_LTP <-f_depth_split(df_NO3_LTP_reduced,obs_col =  "NO3") %>% f_date_bin(v_dates_2mo)
 ```
 
+Process Phytoplankton to get Cyclotella Counts.
 
-## Generate data-frames
+```{r Process Phyto}
+df_Phyto_LTP_reduced <- df_Phyto_LTP %>%
+  # select(Date,Depth,Cyclotella_spp_Count) %>%
+  # rename(Cyclotella = Cyclotella_spp_Count) %>%
+  select(Date,Depth,Cyclotella_spp_Total_Coutnt) %>%
+  rename(Cyclotella = Cyclotella_spp_Total_Coutnt) %>%
+  filter(complete.cases(.))
 
+df_3mo_Cyclotella_LTP <- f_depth_split(df_Phyto_LTP_reduced,obs_col =  "Cyclotella") %>%
+  f_date_bin(v_dates_3mo)
+df_2mo_Cyclotella_LTP <- f_depth_split(df_Phyto_LTP_reduced,obs_col =  "Cyclotella") %>% f_date_bin(v_dates_2mo)
 
+```
+
+### Generate BGC data-frames
 
 ```{r}
 df_3mo_BGC_LTP <- reduce(
@@ -306,9 +318,65 @@ df_2mo_BGC_LTP <- reduce(
 save(df_2mo_BGC_LTP,file="./DATA/PROCESSED/_0 2-month BGC.Rdata")
 ```
 
-
-
 ## Exogenous Variables
+
+### Lake Temperature
+
+Lake Temperature has been measured by several different protocols over the historical period of observation, particularly in the earliest period. We load all in to start, filtering out all but one instrument type from the earliest period.
+
+```{r}
+df_T_LTP_1 <- read_csv("./EDM_Data_Melack/Temperature_1_LTP.csv") %>% 
+  filter(INSTRUMENT %in% c("MARTEK","REV_TH","YSI")) %>%
+  # select(DATE, `DEPTH (m)`, `TEMP (C)`) %>%
+  select(-4) %>%
+  rename(Date=1, Depth=2, Temp=3, Instrument = 4)
+df_T_LTP_2 <- read_csv("./EDM_Data_Melack/Temperature_2_LTP.csv") %>%
+  rename(Date=1, Depth=2, Temp=3) %>%
+  mutate(Instrument = "Brancker")
+df_T_LTP_3 <- read_csv("./EDM_Data_Melack/Temperature_3_LTP.csv") %>%
+  rename(Date=1, Depth=2, Temp=3)
+
+df_T_LTP <- bind_rows(df_T_LTP_1,df_T_LTP_2,df_T_LTP_3)
+```
+
+```{r}
+df_T_LTP %>% pull(Depth) %>% table()
+```
+
+Surface - Bottom (2 - 90)
+Avg Brutt-vasala
+Avg secchi
+
+```{r Reduce depth}
+v_depths_keep_Temp <- c(0,2,5,10,15,20,30,40,50,60,75,90) # c(0,2,5,10,15,20,30,40,50,60,75,90,98)
+
+df_T_LTP_reduced <- df_T_LTP %>% filter(Depth %in% v_depths_keep_Temp)
+```
+
+```{r}
+df_T_LTP_avgs <- f_depth_split(df_T_LTP_reduced,obs_col = "Temp") %>%
+  rename(Temp_avg_sechi = Temp_sechi,Temp_avg_deep_euphotic = Temp_deep_euphotic) %>%
+  mutate(Temp_delta = Temp_avg_sechi - Temp_avg_deep_euphotic)
+
+df_T_LTP_diffs <- f_depth_split_no_weight(df_T_LTP_reduced,obs_col="Temp",
+                                v_depths=c(0,10,60,100),
+                                v_labels=c("top","m1","bot")) %>%
+  mutate(Temp_delta = Temp_top - Temp_bot)
+
+cor(df_T_LTP_avgs$Temp_delta,df_T_LTP_diffs$Temp_delta,use='pair')
+```
+
+Looking at the top/bottom difference more carefully than just the difference between top 25m and 30-90m does not seem to matter. Most unfortunately, however, is that the LTP site has a few multi-month data gaps where only bucket measurements were made. Ultimately, it looks like perhaps the MLTP measurements have some coverage of this period with the "YSI" sensor, but to facilitate EDM analysis on a short time-frame we will simply interpolate with the `forecast` package.
+
+```{r}
+df_2mo_T_LTP <- df_T_LTP_avgs %>% f_date_bin(v_dates_2mo) %>%
+  mutate_at(vars(-Date),.funs = list(~ts(.,frequency=6) %>% na.interp()))
+df_3mo_T_LTP <- df_T_LTP_avgs %>% f_date_bin(v_dates_3mo) %>%
+  mutate_at(vars(-Date),.funs = list(~ts(.,frequency=4) %>% na.interp()))
+
+save(df_2mo_T_LTP,file="./DATA/PROCESSED/_0 2-month T_LTP.Rdata")
+save(df_3mo_T_LTP,file="./DATA/PROCESSED/_0 3-month T_LTP.Rdata")
+```
 
 ### USGS
 
@@ -316,19 +384,19 @@ Upper Truckee River at South Lake Tahoe, CA UT1 10336610 	from 1980
 Blackwood Creek near Tahoe City, CA BC1 10336660 		from 1974
 Ward Creek at Hwy 89 near Tahoe Pines, CA WC8 10336676 	from 1972
 
-#            TS   parameter     statistic     Description
-#        215686       63680     00008     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Median)
-#        215687       63680     00002     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Minimum)
-#        215688       63680     00001     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Maximum)
-#        234636       00010     00003     Temperature, water, degrees Celsius (Mean)
-#          7524       00010     00001     Temperature, water, degrees Celsius (Maximum)
-#          7525       00010     00002     Temperature, water, degrees Celsius (Minimum)
-#          7526       00010     00008     Temperature, water, degrees Celsius (Median)
-#          7527       00010     00011     Temperature, water, degrees Celsius (Instantaneous)
-#          7528       00060     00003     Discharge, cubic feet per second (Mean)
-#          7529       00095     00003     Specific conductance, water, unfiltered, microsiemens per centimeter at 25 degrees Celsius (Mean)
-#          7530       80154     00003     Suspended sediment concentration, milligrams per liter (Mean)
-#          7531       80155     00003     Suspended sediment discharge, short tons per day (Mean)
+            TS   parameter     statistic     Description
+        215686       63680     00008     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Median)
+        215687       63680     00002     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Minimum)
+        215688       63680     00001     Turbidity, water, unfiltered, monochrome near infra-red LED light, 780-900 nm, detection angle 90 +-2.5 degrees, formazin nephelometric units (FNU) (Maximum)
+        234636       00010     00003     Temperature, water, degrees Celsius (Mean)
+          7524       00010     00001     Temperature, water, degrees Celsius (Maximum)
+          7525       00010     00002     Temperature, water, degrees Celsius (Minimum)
+          7526       00010     00008     Temperature, water, degrees Celsius (Median)
+          7527       00010     00011     Temperature, water, degrees Celsius (Instantaneous)
+          7528       00060     00003     Discharge, cubic feet per second (Mean)
+          7529       00095     00003     Specific conductance, water, unfiltered, microsiemens per centimeter at 25 degrees Celsius (Mean)
+          7530       80154     00003     Suspended sediment concentration, milligrams per liter (Mean)
+          7531       80155     00003     Suspended sediment discharge, short tons per day (Mean)
 
 
 ```{r,warning=FALSE}
@@ -365,7 +433,12 @@ save(df_2mo_USGS,file="./DATA/PROCESSED/_0 2-month USGS.Rdata")
 
 ## Precipitation.
 
-Rain versus Snow Water Equivalent (should have different relationships to lake and to ENSO).
+Precipitation and air temperature (National Weather Service via Truckee River Operating Agreement; https://www.troa.net/tis/):
+Daily precipitation and average of max/min temperature at Tahoe City from 1937
+TROA – site 150017 (Lake Tahoe) variables 1616 and 8.
+
+https://www.troa.net/tis/?interval=day&type=1&cat=1&sid=150017&did11=1616&did13=8&format=tab&sdate=01-JAN-1960&edate=01-Apr-2022
+
 
 ```{r}
 L_files_weather_daily <- list(
@@ -423,5 +496,7 @@ df_2mo_indices <- df_indices %>% f_date_bin(v_dates_2mo)
 save(df_3mo_indices,file="./DATA/PROCESSED/_0 3-month indices.Rdata")
 save(df_2mo_indices,file="./DATA/PROCESSED/_0 2-month indices.Rdata")
 ```
+
+
 
 

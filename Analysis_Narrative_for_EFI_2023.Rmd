@@ -1,0 +1,714 @@
+---
+title: "Analysis Narrative for Poster EFI NEON 2023"
+author: "ER Deyle"
+date: "3/9/2022"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+version: '0.1'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(gridExtra)
+library(rEDM)
+library(forecast)
+library(cowplot)
+library(knitr)
+```
+```{r}
+L_save_params <- c("columns","target","E","Tp","knn","tau","theta")
+FLAG_save_plots <- FALSE
+```
+
+## Overview
+
+The analysis and results that follow and are depicted in the associated poster have been adapted from initial analyses reported to Tahoe Regional Planning Agency (TRPA) on behalf of the Tahoe Science Advisory Council (TSCA) in the following white paper:
+
+https://www.tahoesciencecouncil.org/_files/ugd/c115bf_8519fa1fb7614ddfb9ed371610d21ede.pdf
+
+All the steps of analysis should be reproducible with the code and files in this Github besides the initial processing of the raw data, which are not publically shared at this time.
+
+Broadly speaking, the goals of the analysis are to investigate the viability of empirical dynamic modeling for supporting water-quality management of Lake Tahoe, including basic forecasting, forecasting of future management scenarios (e.g. warming), and clarifying mechanistic hypotheses about the drivers of water clarity changes over time.
+
+Conceptually, the steps are:
+1.	Test for the presence of low-dimensional deterministic dynamics through non-parametric prediction.
+2.	System identification through causal analysis.
+3.	Multivariate model building validated by predictive accuracy, aimed at mechanistic understanding.
+
+Subsequent analyses with multivariate model(s) could be applied thereafter such as stability, threshold, and scenario exploration.
+
+Prior to all this, however, the data need to be processed and examined to see if a simple, more-or-less off-the-shelf recipe for ideal data-sets can be applied here.
+
+### Empirical Dynamic Modeling approach
+
+Empirical dynamic modeling is a minimally-assumptive toolbox for predicting and understanding nonlinear systems from time-series data. This may seem like a mouthful, and the methods are best presented graphically through the following three videos.
+
++ Introduction to attractors and time-series: https://www.youtube.com/watch?v=fevurdpiRYg
+
++ Single time-series attractor reconstruction: https://www.youtube.com/watch?v=QQwtrWBwxQg
+
++ Attractor cross-mapping for causal inference: https://www.youtube.com/watch?v=NrFdIz-D2yM
+
+#### Statistical Significance and Null Models
+
+High prediction skill (forecast accuracy) on its own doesn't always indicate meaningful success in ecological and environmental modeling. For example, if you know how many trees there are in a forest today, it's generally quite easy to make a prediction of how many there will be tomorrow (baring a catastrophic event). Generally, a bare minimum for demonstrating meaningful prediction is that the forecast accuracy is better than the "constant predictor" (also called the "naive predictor") that "tomorrow will be the same as today." It's also important to consider seasonality, as predictable seasonal dynamics are easily captured by many many models regardless of their ultimate suitability.
+
+There's a cautionary tale in non-parametric modeling from the folks at Google who set out to make a search-based predictor for influenza outbreaks— GoogleFlu. Without going into detail, the post-mortum on its initial failures revealed that their machine learning had learned mostly just how to predict the time of year based on things like high school basketball and such.
+
+
+### Data
+
+Of the data products identified prior to this study, we have used a subset for initial investigation with empirical dynamic modeling. There are additional data that may well be suitable for additional analysis, but also other data that do not readily fit directly into EDM analysis, e.g. because they aren't measured frequently enough.
+
+#### Used in Analysis-to-date
++ Secchi depths:
+  + LTP – 1967 to 2020 (every ca.13 days);
++ Chlorophyll a:
+  + LTP – 1983 to 2020; 0, 2, 5, 10,15, 20, 30, 40, 50 m (UCD) 60, 75, 90, 105 m
++ Nitrate:
+  + LTP – 1968 to 2020 (every ca.13 days until 2007, and then monthly; 0, 2, 5, 10,15, 20, 30, 40, 50 m (UCD) 
++ USGS Stream discharge:
+  + Upper Truckee River at South Lake Tahoe, CA UT1 10336610 	from 1980
+  + Blackwood Creek near Tahoe City, CA BC1 10336660 		from 1974
+  + Ward Creek at Hwy 89 near Tahoe Pines, CA WC8 10336676 	from 1972
++ Precipitation:
+  + NWS from 1910 daily ppt and aver of max/min temperature at Tahoe City
++ Climate Indices: (https://psl.noaa.gov/data/climateindices/)
+  + Nino 3-4 index
+  + SOI
+
+
+## Phase 0 - Data Processing
+
+Data are coming from many different sources and reflect many different kinds of measurements. We tried to make simple choices to get everything in good enough correspondence for the data science, while retaining as much information/detail as possible.  In part with taking a "minimal assumptive approach" to understanding and forecasting the dynamics of the lake water quality, we are trying to do the minimal amount of data "cleaning" necessary. While the individual changes between measurements can reflect random variations (instrumentation uncertainty),  if we "smooth" these variations too much, we may end up removing sources of variation that reflect the underlying drivers of water quality. However, it would also be possible to revise these strategies in light of management needs, e.g. if there are particular time-intervals or depths of interest.
+
+### Picking a time interval
+
+A particular issue is that the time-series approach is best suited to observations with a uniform (regular) sampling frequency, but the observations from the lake have not been made at an entirely uniform frequency. In general, we find that observations are made at least once every two-month interval. Consequently, the minimum data processing we thought necessary was to do two-month averaging, (generating a processed time-series with a uniform interval). We also processed the data using a three-month average to entertain that a small amount of increased averaging might lead to better statistical power.
+
+Below, the Secchi depth measurements are shown over the 2-year period from January 1st 1970 to January 1st 1972 (plus signs). Both the 2-month and 3-month binned averages were examined initially, but focus was placed on 2-month as it was the shortest viable time step. The data in the future could permit analysis at even shorter time scales but would have to contend with irregular sampling and missing data. Note that the raw data are not made available publicly at this time, so the plot itself is archived.
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+file_time_interval_plot <- "./FIGURES/EFI NEON 2023 POSTER/Narrative - Picking a time interval.Rdata"
+
+if(file.exists("./EDM_Data_Melack/Secchi_LTP.csv")){
+
+  date_start_plot <- as.Date("1970-01-01")
+  date_end_plot <- as.Date("1972-01-01")
+  
+  df_Secchi_LTP <- read_csv("./EDM_Data_Melack/Secchi_LTP.csv")
+  
+  df_Secchi_LTP <- df_Secchi_LTP %>% 
+    mutate(Date=as.Date(Date_Time_Local)) %>%
+    filter(Date >= date_start_plot) %>%
+    filter(Date <= date_end_plot)
+  
+  load("./DATA/PROCESSED/_0 2-month BGC.Rdata")
+  load("./DATA/PROCESSED/_0 3-month BGC.Rdata")
+  
+  g_vis_bin_3mo <- df_3mo_BGC_LTP %>%
+    ggplot(aes(x=Date)) + 
+    geom_step(aes(y=Secchi_Ave)) +
+    geom_point(data=df_Secchi_LTP,aes(y=Secchi_Ave),pch=3) +
+    xlim(c(date_start_plot,date_end_plot)) +
+    labs(title="3-month averaging", y="Secchi Depth (m)") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  
+  g_vis_bin_2mo <- df_2mo_BGC_LTP %>%
+    ggplot(aes(x=Date)) + 
+    geom_step(aes(y=Secchi_Ave)) +
+    geom_point(data=df_Secchi_LTP,aes(y=Secchi_Ave),pch=3) +
+    xlim(c(date_start_plot,date_end_plot)) +
+    labs(title="2-month averaging", y="Secchi Depth (m)") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  
+  g_vis_bin_combined <- gridExtra::grid.arrange(g_vis_bin_3mo,g_vis_bin_2mo,nrow=1) 
+  
+  save(g_vis_bin_combined,file=file_time_interval_plot)
+  
+}else{
+  load(file_time_interval_plot)
+}
+
+g_vis_bin_combined
+
+```
+
+### Depth
+
+Many of the lake variables aren't just sampled across time, but also across depth. We attempted to usefully summarize this information based on existing limnological understanding of the lake. We use a depth-weighted averaging scheme to look at BGC in the "Secchi zone" and the "deep euphotic" zone. In future analysis, there is also information on the "deep deep" zone of the lake (below the deep chlorophyll maximum). Also note that this approach let us address missing values at particular depths on particular days.
+
+
+### Plots
+
+With this processing we have the follow variables in hand to use for initial EDM analyses:
+
+```{r,include=FALSE}
+load("DATA/PROCESSED/_2 CCM input.Rdata")
+load("DATA/PROCESSED/_0 2-month BGC.Rdata")
+```
+
+```{r,echo=FALSE}
+names(head(df_CCM))[-1]
+```
+
+```{r,echo=FALSE}
+# names_BGC <- (intersect(names(df_CCM)[-1],names(df_2mo_BGC_LTP)[-1]))
+# units_CCM <- c(
+#   "Secchi_Ave"         = "(m)",
+#   "Chla_sechi"         = "(ug*L^-1)",
+#   "Chla_deep_euphotic" = "(ug*L^-1)",
+#   "NO3_sechi"          = "(ug*L^-1)",
+#   "NO3_deep_euphotic"  = "(ug*L^-1)", # "ug L^-1 as N"?
+#   "NINO_34"            = "(degC)",
+#   "precip"             = '("in")',
+#   "Q_mean_Blackwood"   = "(ft^3/s)",
+#   "Q_mean_Upper_Truckee" = "(ft^3/s)",
+#   "Q_mean_Ward"        = "(ft^3/s)",
+#   "SOI"                = ""
+# )
+# 
+# names_other <- sort(setdiff(names(df_CCM)[-1],names(df_2mo_BGC_LTP)[-1]))
+# 
+# 
+# g_processed_time_series <- df_CCM %>%
+#   rename_at(vars(any_of(names(units_CCM))),.funs=list(~paste(.,units_CCM,sep="\n"))) %>%
+#   pivot_longer(-Date,names_to="name") %>%
+#   # mutate(name=factor(name,levels=c(names_BGC,names_other))) %>%
+#   arrange(name,Date) %>%
+#   mutate(name=str_replace(name,"_mean","")) %>%
+#   mutate(name=str_replace_all(name,"_","\n")) %>%
+#   mutate(name=factor(name,levels=unique(name))) %>%
+#   ggplot(aes(Date,value,color=name)) + 
+#   geom_line() + 
+#   facet_grid(name~.,scales="free_y",labeller=label_value) +
+#   # facet_grid(name~.,scales="free_y",labeller = labeller(name   = as_labeller(var_names, label_parsed))) +
+#   # facet_grid(name~.,scales="free_y",labeller = labeller(name   = as_labeller(units_CCM, label_parsed))) +
+#   theme_bw() +
+#   theme(legend.position = "none")
+
+
+```
+
+
+```{r,echo=FALSE}
+names_BGC <- (intersect(names(df_CCM)[-1],names(df_2mo_BGC_LTP)[-1]))
+
+units_CCM <- c(
+  "Secchi_Ave"         = "(m)",
+  "Chla_sechi"         = "(ug*L^{-1})",
+  "Chla_deep_euphotic" = "(ug*L^{-1})",
+  "NO3_sechi"          = "(ug*L^{-1})",
+  "NO3_deep_euphotic"  = "(ug*L^{-1})", # "ug L^-1 as N"?
+  "NINO_34"            = "(C^o)",
+  "precip"             = '("in")',
+  "Q_mean_Blackwood"   = "(ft^3/s)",
+  "Q_mean_Upper_Truckee" = "(ft^3/s)",
+  "Q_mean_Ward"        = "(ft^3/s)",
+  "SOI"                = ""
+)
+
+g_tseries_secchi <- df_CCM %>%
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=Secchi_Ave)) +
+  labs(y="Secchi Depth (m)",title="",x="")
+
+g_tseries_chla <- df_CCM %>%
+  select(Date,starts_with("Chla")) %>%
+  pivot_longer(-Date,names_to="Depth Zone",values_to = "Chla",names_prefix = "Chla_") %>%
+  mutate(`Depth Zone` = str_replace_all(`Depth Zone`,"_"," ")) %>%
+  mutate(`Depth Zone` = str_replace_all(`Depth Zone`,"sechi","Secchi")) %>%
+  ggplot(aes(x=Date,y=Chla,color=`Depth Zone`)) +
+  geom_line() +
+  scale_color_manual(values = c("lightgreen","darkgreen")) +
+  labs(y=expression("Chl a"~(mu*g*L^{-1})),x="",title="")
+
+g_tseries_NO3<- df_CCM %>%
+  select(Date,starts_with("NO3")) %>%
+  pivot_longer(-Date,names_to="Depth Zone",values_to = "NO3",names_prefix = "NO3_") %>%
+  mutate(`Depth Zone` = str_replace_all(`Depth Zone`,"_"," ")) %>%
+  mutate(`Depth Zone` = str_replace_all(`Depth Zone`,"sechi","Secchi")) %>%
+  ggplot(aes(x=Date,y=NO3,color=`Depth Zone`)) +
+  geom_line() +
+  scale_color_manual(values = c("goldenrod1","darkorange2")) +
+  labs(y=expression("NO"[3]~(mu*g*L^{-1})),x="",title="")
+
+g_tseries_precip <- df_CCM %>%
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=precip)) +
+  labs(y="Precipitation (in)",title="",x="")
+
+g_tseries_Q<- df_CCM %>%
+  select(Date,starts_with("Q")) %>%
+  pivot_longer(-Date,names_to="Stream",values_to = "Q",names_prefix = "Q_mean_") %>%
+  mutate(`Stream` = str_replace_all(`Stream`,"_"," ")) %>%
+  ggplot(aes(x=Date,y=Q,color=`Stream`)) +
+  geom_line() +
+  scale_color_manual(values = c("navyblue","royalblue1","deepskyblue")) +
+  labs(y=expression("Flow"~(ft^3/s)),x="",title="")
+
+g_tseries_WT <- df_CCM %>%
+  select(Date,starts_with("Temp_avg")) %>%
+  pivot_longer(-Date,names_to="Depth Zone",values_to = "T",names_prefix = "Temp_avg") %>%
+  mutate(`Depth Zone` = str_replace_all(`Depth Zone`,"_"," ")) %>%
+  mutate(`Depth Zone` = str_replace_all(`Depth Zone`,"sechi","Secchi")) %>%
+  ggplot(aes(x=Date,y=T,color=`Depth Zone`)) +
+  geom_line() +
+  scale_color_manual(values = c("red4","indianred1")) +
+  labs(y="Lake T (ºC)",x="",title="")
+  
+# Temp_avg_sechi
+
+g_tseries_indices <- df_CCM %>%
+  select(Date,SOI,NINO_34) %>%
+  rename("Ni\u00F1o 3-4 Anomaly" = NINO_34,"Southern Oscillation Index" = SOI) %>%
+  pivot_longer(-Date,names_to="Name",values_to = "Index") %>%
+  ggplot(aes(x=Date,y=Index,color=`Name`)) +
+  geom_line() +
+  scale_color_manual(values = c("grey70","grey20")) +
+  labs(y="Climate Index",title="")
+
+L_g_tseries <- list(g_tseries_secchi + theme_bw(),
+                    g_tseries_chla + theme_bw(),
+                    g_tseries_NO3 + theme_bw(),
+                    g_tseries_WT + theme_bw(),
+                    g_tseries_Q + theme_bw(),
+                    g_tseries_indices + theme_bw())
+
+g_tseries <- cowplot::plot_grid(plotlist= L_g_tseries,
+                            ncol=1,
+                            axis="tblr",
+                            align="v")
+
+if(FLAG_save_plots){
+  f_name <- "./FIGURES/EFI NEON 2023 POSTER/Figure 3 - processed time series.pdf"
+  
+  pdf(file=f_name,width = 6,height=9)
+  print(g_tseries)
+  dev.off()
+}else{
+  print(g_tseries)
+}
+```
+
+
+
+## Phase 1 - Single-Variable Forecast Analysis
+
+Forecasting can be an end unto itself of ecosystem management. However, analysis of the univariate (single-variable) forecast skill can help us distinguish hypotheses about underlying mechanisms in the lake (ala Hsieh et al. 2005), for example, if the lake water quality is simply tracking a climatic driver or shows evidence of internal feedback and cycling. It also serves as a foundation for subsequent causal and quasi-mechanistic modeling in two ways. (1) It provides guidance on parameters for the analysis, like degree of time averaging. In this case, we are entertaining 2 month and 3 month temporal averaging of the core BGC variables. (2) It validates the grounding assumption of CCM analysis, which is that there are low-dimensional attractor dynamics that (at least partially) explain changes in the time series variables.
+
+### Standard Univariate analysis
+
+The standard univariate analysis for a single time series with EDM involves sequential applications of simplex and s-map analysis of short-term forecast skill. Simplex projection involves only a single parameter, E, termed the embedding dimension. It is not a true parameter like the growth rate in a Lotka-Volterra model of predation. It can take on discrete values and these can be interpreted as indicating something about the underlying dimensionality of the system, i.e. how many different variables combine to affect its change over time. All things equal, a higher "E" indicates a higher dimensionality of the underlying dynamics.
+
+The S-map forecast approach also depends on the embedding dimension parameter, "E", as well as the nonlinear tuning parameter, "theta". If there is context-dependence to the underlying processes affecting the variable, then S-map analysis should show increasing prediction skill with increasing theta, at least up to a point.
+
+```{r}
+load("./DATA/PROCESSED/_0 2-month BGC.Rdata")
+
+df_BGC <- df_2mo_BGC_LTP %>%
+  mutate(delta_Secchi = c(NA,diff(Secchi_Ave)))
+df_BGC <- df_BGC[102:323,]
+
+E_list <- 1:15
+theta_list <- c(0,10^seq(-2,0.5,by=.05))
+
+lib <- paste(1,NROW(df_BGC))
+pred <- paste(1,NROW(df_BGC))
+
+## Simplex
+stats_simplex <- map_df(E_list,function(E_i){
+  out_simplex_i <- Simplex(dataFrame=df_BGC,
+                           target="delta_Secchi",
+                           columns="delta_Secchi",
+                           lib=lib,pred=pred,
+                           E=E_i,
+                           parameterList=TRUE)
+  
+  stats_i <- compute_stats(out_simplex_i$predictions$Predictions,
+                           out_simplex_i$predictions$Observations)
+  
+  stats_i <- bind_cols(out_simplex_i$parameters[L_save_params],
+                       stats_i
+  )
+  
+  return(stats_i)
+  
+})
+
+stats_simplex <- suppressMessages(type_convert(stats_simplex))
+
+E_star <- as.integer(stats_simplex$E[which.max(stats_simplex$rho)])
+
+## S-map
+stats_smap <- map_df(theta_list,function(theta_i){
+  
+  out_smap_i <- SMap(dataFrame=df_BGC,
+                     target="delta_Secchi",
+                     columns="delta_Secchi",
+                     lib=lib,pred=pred,
+                     E=E_star,
+                     Tp=1,
+                     theta=theta_i,
+                     parameterList = TRUE)
+  
+  stats_i <- compute_stats(out_smap_i$predictions$Predictions,out_smap_i$predictions$Observations)
+  
+  stats_i <- bind_cols(
+    out_smap_i$parameters[L_save_params],
+    stats_i
+  )
+  
+  return(stats_i)
+  
+})
+
+out_AR_1 <- SMap(dataFrame=df_BGC,
+                 target="delta_Secchi",
+                 columns="delta_Secchi",
+                 lib=lib,pred=pred,
+                 E=1,
+                 theta=0,
+                 Tp = 1,
+                 parameterList = TRUE)
+
+  stats_AR_1 <- compute_stats(out_AR_1$predictions$Predictions,out_AR_1$predictions$Observations)
+  
+  stats_AR_1 <- bind_cols(
+    out_AR_1$parameters[L_save_params],
+    stats_AR_1
+  )
+
+stats_smap <- suppressMessages(type_convert(stats_smap))
+
+stats_simplex %>% ggplot(aes(x=E,y=rho)) + geom_line()
+stats_smap %>% ggplot(aes(x=theta,y=rho)) + geom_line()
+```
+
+
+
+
+### "EDM Benchmarks" of Prediction
+
+The fundamental outputs of univariate EDM analysis we are interested in are measures of forecast skill. In general, we see the biogeochemical variables have predictable short-term dynamics. The lowest forecast skill is seen for the deep chlorophyll concentration, "Chla_deep_euphotic", which shows simplex forecast skill of about rho = 0.44, which is still highly significant for > 200 data points under the basic "rule of thumb" for Gaussian (bell-curve) statistics.
+
+Data from natural systems (this lake included) rarely follow the simple rules! Slow secular changes over time, seasonal cycling, extreme events, and many other common behaviors don't fit the "Guassian" model. To assess the statistical power and significance, then, it is better to assess significance using null surrogate methods. The idea with surrogates is to generate random data that preserve basic properties of the system, like the seasonal cycle or the long-term trend, but randomize the "rest" of the variation. The particular "how" of generating surrogates generally matches to a hypothesis. We focused on three such "null hypotheses" for the interpretation of our results.
+
+
+### "Null Hypotheses"
+
+We will replicate the analysis across several variables, using a few tests and statistics to contextualize and interpret the results. (These are how we establish the statistical significance of the methods; is there meaningful prediction skill).
+
+*Null Hypothesis 1*: Prediction skill is due to random chance.
+
+If the prediction skill we see is simply due to random chance, then we should be able to randomly shuffle the sequence of the observations and get similar forecast skills for these surrogate time series as our analysis of the real data.
+
+*Null Hypothesis 2*: Prediction skill is due to serial autocorrelation in the time series.
+
+If the prediction skill we see is simply due to autocorrelation (inertia) of the observations, then we should be able to generate random realization of an AR1 (simple autoregression) process and get similar forecast skills for these surrogate time series as our analysis of the real data.
+
+*Null Hypothesis 3*: Prediction skill is due to seasonal cycling.
+
+If the prediction skill we measure is due to the inherent seasonality of the lake system, then we should be able to randomize the deviations from the long-term seasonal average and get similar forecast skills for these surrogate time series as our analysis of the real data.
+
+
+### Evidence of Predictable Dynamics
+
+Sechi depth was analyzed as well as chl a and NO3. The Sechi depth is highlighted in the poster, but by uncommenting below the larger set of results can be displayed.
+
+```{r,echo=FALSE}
+source("./FUNCTIONS/_1_funs_plotting.R")
+load("./DATA/PROCESSED/_0 2-month BGC.Rdata")
+
+# file_list <- list(file_Sechi_surr,
+#                   file_Chla_sechi_surr,
+#                   file_Chla_deep_euphotic,
+#                   file_NO3_sechi_surr,
+#                   file_NO3_deep_euphotic)
+
+file_list <- list("./RESULTS/_1_sechi_ave_univar_surr_2mo.Rdata")
+
+df_BGC <- df_2mo_BGC_LTP %>%
+  mutate(delta_Secchi = c(NA,diff(Secchi_Ave)))
+df_BGC <- df_BGC[102:323,]
+df_BGC <- mutate_at(df_BGC,-1, ~ zoo::na.approx(., maxgap = 4))
+T_annual <- 6
+
+source("FUNCTIONS/help_functions_EDM.R")
+
+summarise_univars <- function(edm_stats){
+  
+  out <- data.frame(
+    target = edm_stats$simplex$target[1],
+    rho_simplex = max(edm_stats$simplex$rho),
+    mae_simplex = min(edm_stats$simplex$mae),
+    rmse_simplex = min(edm_stats$simplex$rmse),
+    rho_smap_0 = edm_stats$smap$rho[1],
+    mae_smap_0 = edm_stats$smap$mae[1],
+    rmse_smap_0 = edm_stats$smap$rmse[1],
+    rho_smap = max(edm_stats$smap$rho),
+    mae_smap = min(edm_stats$smap$mae),
+    rmse_smap = min(edm_stats$smap$rmse)
+  )
+  
+  return(out)
+}
+
+out_all_var_univar <- map_dfr(names(df_BGC)[2],function(var_name){
+  out <- do_univariate_1_var(df_BGC,var_name)
+  return(summarise_univars(out))
+  })
+
+out_all_null_all_var <- map_dfr(file_list,function(fpath){
+  
+  env_i <- new.env()
+  load(fpath,env_i)
+  
+  out_i <- collect_null_results(outputs=list(env_i$out_shuffle,env_i$out_AR,env_i$out_seasonal),
+                       labels=list("shuffle","persistence","seasonal"))
+  
+  return(out_i)
+  
+})
+```
+
+```{r}
+# load(file="_1_FIGURES_all_nulls.Rdata")
+
+g_simplex_all_nulls <- out_all_null_all_var %>% 
+  # mutate(target = factor(target,levels=names(dict_Fig4_labelling),labels=dict_Fig4_labelling)) %>%
+  ggplot(aes(x=target,y=rho_simplex)) + 
+  geom_violin(alpha=0.5,aes(fill=method)) +
+  geom_point(data=out_all_var_univar,size=3,aes(color="true")) +
+  geom_spoke(data=out_all_var_univar,aes(angle = 0, radius = 0.25,color="true")) +
+geom_spoke(data=out_all_var_univar,aes(angle = pi, radius = 0.25,color="true")) +
+  coord_flip() +
+  scale_color_manual(values="black",breaks="true") +
+  scale_x_discrete(labels="Secchi Depth") +
+  theme_bw() +
+  labs(title="Simplex Null Distributions",
+       y="LOO Forecast Skill (\u03C1)",color="",x="")
+
+g_smap_all_nulls <- out_all_null_all_var %>% 
+  # mutate(target = factor(target,levels=names(dict_Fig4_labelling),labels=dict_Fig4_labelling)) %>%
+  ggplot(aes(x=target,y=rho_smap)) + 
+  geom_violin(alpha=0.5,aes(fill=method)) +
+  geom_point(data=out_all_var_univar,size=3,aes(color="true")) +
+  geom_spoke(data=out_all_var_univar,aes(angle = 0, radius = 0.25,color="true")) +
+geom_spoke(data=out_all_var_univar,aes(angle = pi, radius = 0.25,color="true")) +
+  coord_flip() +
+  scale_color_manual(values="black",breaks="true") +
+  scale_x_discrete(labels="Secchi Depth") +
+  theme_bw() +
+  labs(title="S-map Null Distributions",
+       y="LOO Forecast Skill (\u03C1)",color="",x="")
+
+g_legend_nulls <- get_legend(g_smap_all_nulls)
+
+g_stacked_nulls <- plot_grid(g_simplex_all_nulls + 
+                               theme(legend.position = "none",plot.margin = margin(0, 6, 0, 6)) +
+                               labs(y=NULL),
+                             g_smap_all_nulls + 
+                               theme(legend.position = "none",plot.margin = margin(0, 6, 0, 6)),
+                             align="vh",axis="lbt",
+                             ncol=1)
+
+g_combined <- plot_grid(g_stacked_nulls,g_legend_nulls,rel_widths = c(1,.2))
+
+if(FLAG_save_plots){
+  cairo_pdf(file="./FIGURES/EFI NEON 2023 POSTER/Center 2 - univariate violins.pdf",height = 2,width=6)
+  print(g_combined)
+  dev.off()
+  
+}else{
+  print(g_combined)
+}
+
+```
+
+In all cases, prediction skills are well outside of what would be expected for random data with the same distribution of values (i.e. the “shuffle” surrogates). The autocorrelation (inertia to change through time) as well as seasonal patterns in all the time series do create an expectation of prediction, but in general the EDM results appear to lie outside the expected prediction skill of both the “AR” and the “seasonal” null as well.
+
+Overall, there is clear evidence of low-dimensional behavior; i.e. predictable change over time based on a few variables/interactions.
+
+
+**What does this include**: both effects from the "rules" governing the internal ecology of the lake as well as effects of climate variables that are themselves predictable (e.g. the seasonal cycle).
+
+**What does this not include**: possible predictible effects of climate drivers that themselves are not predictable, i.e. "stochastic drivers".
+
+### Time horizon
+
+*This piece of analysis is incomplete*
+
+Generally, we find that there is substantial long-term forecast skill popular due to the underlying seasonality of the system.
+
+## Phase 2 - Core Causal Analysis
+
+Questions:
+ - Which physical/climate drivers show the strongest evidence of effect on lake water quality?
+ - Do the climatic drivers have simple or complex effects?
+ 
+For the second question, we can specifically look at lagged statistical relationships and compare them to the nonlinear causal metrics.
+
+
+### Variables
+
+For the core causal analysis we focused on the immediate biogeochemical variables: Secchi depth, Chlorophyll-a, and Nitrate, as well as USGS stream flow measurements, TROA precipitation measurements, and El Nino indices (SOI, NINO 3-4).
+
+```{r,echo=FALSE}
+load("./DATA/PROCESSED/_2 CCM input.Rdata")
+
+names(df_CCM[-1])
+```
+
+### Simple (lagged) statistical correlations
+
+The 2-month averaged flow between the three USGS stations (Upper Truckee, Ward Creek, and Blackwood Creek) are highly correlated with each other at 0-lag. This would suggest either aggregating or working with the single most trust-worthy measurement. The Upper Truckee, for example, has a number of missed measurements due to ice (~1460 days). Ward Creek had very few, and so this juncture, we focused on analyzing stream flow just from the Ward Creek gauge.
+
+In the case of the other variables, we expect that physical drivers acting on the lake won't necessarily act instantenously; therefore, it makes sense to look at possible time-lag relationships. For example, below is the "cross-correlation function" (as a function of time lag) between the Ward creek stream-flow, Q_mean_Ward, and the TROA precipitation record at Tahoe City, "precip".
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE,fig.cap = "Time-lagged correlation analysis of streamflow and precipitation. The Pearson correlation coefficient between streamflow and time-lagged precipitation is shown as a function of the time lag. The 2-month increments in time-lag value reflect that these time series have been processed in 2-month increments. The blue dotted lines represent 95% confidence intervals based on standard Gaussian statistics."}
+# df_CCM %>% select(var_i,var_j) %>% filter(complete.cases(.))
+g_stream_correlations <- ggCcf(df_CCM$precip,df_CCM$Q_mean_Ward,lag.max=12) +
+  labs(x="Lag (mo)",
+       y="Cross-correlation (\u03C1)",
+       title=expression(paste("\u03C1(",Q[Ward],"(t),","Precip(t-Lag))"))
+       ) + 
+  scale_x_continuous(breaks=seq(-12,12,by=6),labels=~paste(.*2)) +
+  theme_bw()
+print(g_stream_correlations)
+```
+
+The above shows that the stream-flow (at Ward creek) is most strongly associated not with the present value of precipitation, but the 4-month lag (2 time-steps of 2-month averaged data).
+
+
+### Nonlinear coupling relationships
+
+We next examine evidence of coupling using the time-series forecasting framework, convergent cross-mapping. While linear correlation is based on if the static value of one variable predicts the other, CCM tests if the sequence of changes in one predicts the other. While this doesn't sound fundamentally different, it can give very different answers— uncovering hidden causal interactions or clarifying ephemeral "mirage" correlations that seem to appear and disappear.
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+out_CCM_example <- ccm(df_CCM,target_column = "precip",lib_column = "Secchi_Ave",E=7,lib_sizes=seq(20,160,by=10),tp=-3)
+
+
+max_corr_pred <- max(abs(ccf(df_CCM$precip,df_CCM$Secchi_Ave)$acf))
+
+g_CCM_example <- out_CCM_example %>%
+  ggplot(aes(x=LibSize)) +
+  geom_line(aes(y=`Secchi_Ave:precip`),color="tomato") +
+  geom_hline(aes(yintercept = max_corr_pred),lty=2) +
+  labs(x="L (library size)",y="Cross-map skill (rho)",title="Causation of Precip -> Secchi Depth")
+
+print(g_CCM_example)
+```
+
+Note that both the cross-map skill and linear correlations are quantified using Pearson's correlation coefficient for explained variance, and therefore can, at least superficially, be directly compared.
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE,fig.cap="Time-lagged correlation analysis of Seccih depth and streamflow The Pearson correlation coefficient between streamflow and time-lagged precipitation is shown as a function of the time lag. The 2-month increments in time-lag value reflect that these time series have been processed in 2-month increments. The blue dotted lines represent 95% confidence intervals based on standard Gaussian statistics. Note that both positive and negative cross-correlations are of interest."}
+
+g_precip_correlations <- ggCcf(df_CCM$precip,df_CCM$Secchi_Ave,lag.max=12) +
+  labs(x="Lag (mo)",
+       y="Cross-correlation (\u03C1)",
+       title=expression(paste("\u03C1(",Secchi,"(t),","Precip(t-Lag))"))
+       ) + 
+  scale_x_continuous(breaks=seq(-12,12,by=6),labels=~paste(.*2)) +
+  theme_bw()
+
+print(g_precip_correlations)
+
+```
+
+While there is a lagged linear relationship between precipitation and secchi depth (single lagged value of Secchi depth recovers ~16% of the variance in precipitation), the dynamic causal method explains greater variance (dynamics of Secchi depth recovers ~28% of the variance in precipitation). This is evidence of a complex coupling between weather and clarity. The complexity could come from regional hydrography integrating precipitation in a nonlinear way (e.g. snow pack accumulation and melting) as well as from biogeochemistry of the lake system itself.
+
+### Summary Comparison
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+load(file="./RESULTS/_2 lag analysis table.Rdata")
+
+df_lag_analys_BGC_vs_phys %>%
+  select(columns,target,rho_ccm,rho_corr) %>%
+  rename(variable=columns,driver=target) %>%
+  arrange(variable,driver) %>%
+
+kable(digits = 2, row.names = NA, col.names = NA, align=c('r','r','c','c'), 
+    caption = NULL, format.args = list(), escape = TRUE)
+```
+
+
+### Multivariate Analysis
+
+Panel (A), for each line, the starting point on the left is incorporating only the climate drivers. In all cases this only captures a piece of the variability. Adding additional dimensions (increasing E), the predictability increases. This indicates that there are additional drivers of variation beyond the drivers we've identified here.
+
+Panel (B)...
+
+```{r}
+load('./RESULTS/_3_Sechi_deltas_mEDM.Rdata')
+load('./RESULTS/_3_Sechi_deltas_multiview.Rdata')
+
+results_mEDM_multiview <- compute_stats(results_multiview$Predictions$Observations,
+                                   results_multiview$Predictions$Predictions)
+# results_multiview
+
+g_mEDM_secchi_simplex <- results_mEDM_simplex %>%
+  ggplot(aes(x=E,y=rho,color=columns)) + 
+  geom_line() +
+  geom_hline(data=results_mEDM_multiview,aes(yintercept=rho),color="black",lty=2) +
+  theme_half_open(11) +
+  labs(y="LOO Forecast Skill (\u03C1)") +
+   theme(plot.margin = margin(6, 0, 6, 0))
+
+g_mEDM_secchi_smap <- results_mEDM_smap %>%
+  ggplot(aes(x=theta,y=rho,color=columns)) + 
+  geom_line() +
+  theme_half_open(11) +
+  labs(y="LOO Forecast Skill (\u03C1)",x="Nonlinearity (\u03B8)") +
+  theme(plot.margin = margin(6, 0, 6, 0))
+
+
+g_legend <- get_legend(
+  # create some space to the left of the legend
+  g_mEDM_secchi_simplex + theme(legend.box.margin = margin(0, 0, 0, 12)) +
+    labs(color="Additional\nDrivers")
+)
+ 
+ g_nest <- plot_grid(
+    g_mEDM_secchi_simplex + theme(legend.position="none"),
+    plot_grid(g_mEDM_secchi_smap + theme(legend.position="none"),
+              g_legend,
+              nrow=2,
+              rel_heights = c(3,1.5),
+              axis="t",
+              align='h',
+              # vjust=0,
+              greedy=FALSE
+    ),
+    axis="t",
+    align = 'h',
+    # labels = c("Simplex","","S-map"),
+    # hjust = -1,
+    nrow = 1,
+    rel_widths = c(1.25,1.25)
+)
+ 
+if(TRUE){
+  f_name <- "./FIGURES/EFI NEON 2023 POSTER/Center 1 - Sechi deltas mEDM.pdf"
+  cairo_pdf(file=f_name,width = 6,height=5)
+  
+ 
+  print(g_nest)
+ 
+  dev.off()
+}
+
+```
+
+### Interpretation
+
+A key need we understand of Lake Tahoe managers is forecasting and understanding impacts of extrinsic drivers like El Nino oscillations on the lake water quality. There are multiple plausible pathways for ENSO to impact water quality. There are multiple known/hypothesized effects of El Nino on the regional and lake systems; in fact there are multiple pathways of effect on multiple variables (stream flow, lake temperature, lake thermal structure, ...). Our goal with causal analysis is to assess not just the net effect but evidence for the importance/balance of individual pathways. That being said, a direct comparison of "rho_ccm" across variables is tricky without additional analysis. The "Nino 3-4" index does show evidence of a causal effect on Secchi depth, despite the prediction skills associated with it being smaller than the more proximate physical drivers (stream-flow and precipitation).
+
+While we don't want to overinterpret the magnitude of "rho" values between variables, as stated above looking at the agreement or disagreement between the "rho_ccm" (nonlinear causal method) and "rho_corr" (traditional statistical method) for a single driver-response pair is potentially useful. We note that the linear correlations between precipitation and Secchi_ave look very similar in magnitude to those between the stream-flow and Sechi_ave. However, the CCM skill ("rho_ccm") is distinctly larger for the stream-flow than precipitation. This same pattern holds for the Chlorophyll-a variables as well. There is additional ecological context to these results, particularly thinking about the different limnological targets—clarity, chlorophyll, and nitrate— and also emerging science from overlapping lines of inquiry.
+
+
+
